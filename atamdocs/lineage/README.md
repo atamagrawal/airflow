@@ -11,27 +11,53 @@ Column lineage tracks how data flows through your pipelines at the column level,
 
 ## Available Examples
 
-### [Example 1: PostgreSQL Column Lineage](./example1/)
+### [Simple Example: PostgreSQL Column Lineage Basics](./simple-example/)
+
+**Perfect for:** Getting started and understanding the core concept
 
 **What it demonstrates:**
-- Automatic column lineage for PostgreSQL operations
-- Table creation, insertion, and transformations
-- JOINs, aggregations, and complex SQL
-- Complete Docker setup with Marquez (OpenLineage backend)
+- Basic column lineage with minimal setup
+- Just 4 simple tasks
+- Uses file output (no backend needed)
+- Single Docker command setup
 
 **Covers:**
-- ✓ Identity transformations (direct column copy)
-- ✓ Aggregations (COUNT, SUM, AVG, MIN, MAX)
-- ✓ Complex transformations (CONCAT, CASE statements)
+- ✓ Basic aggregations (COUNT, SUM)
+- ✓ Simple CASE statements
+- ✓ Direct column mapping
+- ✓ Core lineage concepts
+
+**Level:** Beginner
+
+**Time to complete:** 5 minutes
+
+**[Go to Simple Example →](./simple-example/README.md)**
+
+---
+
+### [Complex Example: Production-Ready PostgreSQL Lineage](./complex-example/)
+
+**Perfect for:** Production implementation and advanced patterns
+
+**What it demonstrates:**
+- Complete column lineage setup with Marquez Web UI
+- 10 tasks showing various patterns
+- Docker Compose with full stack
+- Visual lineage exploration
+
+**Covers:**
 - ✓ Multi-table JOINs
+- ✓ Complex aggregations (COUNT, SUM, AVG, MIN, MAX)
+- ✓ Advanced transformations (CONCAT, CASE statements)
 - ✓ INSERT INTO ... SELECT operations
-- ✓ Conditional logic and categorization
+- ✓ Automated setup script
+- ✓ Marquez visualization
 
-**Level:** Beginner to Intermediate
+**Level:** Intermediate to Advanced
 
-**Time to complete:** 15-30 minutes
+**Time to complete:** 30 minutes
 
-**[Go to Example 1 →](./example1/README.md)**
+**[Go to Complex Example →](./complex-example/README.md)**
 
 ## Getting Started
 
@@ -50,15 +76,22 @@ Each example is self-contained with:
 
 ### Quick Start
 
-1. Choose an example
-2. Navigate to the example directory
-3. Run the setup script:
-   ```bash
-   cd example1
-   chmod +x setup.sh
-   ./setup.sh
-   ```
-4. Follow the example-specific instructions
+**New to column lineage? Start with the simple example:**
+
+```bash
+# Just one Docker command and you're ready!
+cd simple-example
+# Follow the README - takes 5 minutes
+```
+
+**Ready for production? Try the complex example:**
+
+```bash
+# Full setup with Marquez Web UI
+cd complex-example
+chmod +x setup.sh
+./setup.sh
+```
 
 ## How Column Lineage Works in Airflow
 
@@ -420,14 +453,27 @@ Have an example to share? Contributions welcome!
 3. Update this index
 4. Submit a PR
 
+## Example Comparison
+
+| Feature | Simple Example | Complex Example |
+|---------|---------------|-----------------|
+| **Setup Time** | 5 minutes | 30 minutes |
+| **Tasks** | 4 | 10 |
+| **Tables** | 3 | 7 |
+| **Infrastructure** | Single Docker container | Docker Compose (4 services) |
+| **Visualization** | JSON file | Marquez Web UI |
+| **Setup Script** | Manual commands | Automated script |
+| **Best For** | Learning concepts | Production patterns |
+| **Prerequisites** | Docker only | Docker + Docker Compose |
+
 ## Future Examples
 
 Coming soon:
-- Example 2: Python Operator Column Lineage
-- Example 3: BigQuery Column Lineage
-- Example 4: Snowflake Column Lineage
-- Example 5: Multi-Provider Lineage
-- Example 6: Custom Operator Implementation
+- Python Operator Column Lineage
+- BigQuery Column Lineage
+- Snowflake Column Lineage
+- Multi-Provider Lineage
+- Custom Operator Implementation
 
 ## Support
 
