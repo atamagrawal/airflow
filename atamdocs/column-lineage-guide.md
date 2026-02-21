@@ -4,11 +4,12 @@
 1. [Overview](#overview)
 2. [How Column Lineage Works](#how-column-lineage-works)
 3. [Architecture](#architecture)
-4. [Implementation Examples](#implementation-examples)
-5. [Provider-Specific Examples](#provider-specific-examples)
-6. [Custom Operator Implementation](#custom-operator-implementation)
-7. [Best Practices](#best-practices)
-8. [Limitations and Future Improvements](#limitations-and-future-improvements)
+4. [How Column Lineage is Generated from a DAG](#how-column-lineage-is-generated-from-a-dag)
+5. [Implementation Examples](#implementation-examples)
+6. [Provider-Specific Examples](#provider-specific-examples)
+7. [Custom Operator Implementation](#custom-operator-implementation)
+8. [Best Practices](#best-practices)
+9. [Limitations and Future Improvements](#limitations-and-future-improvements)
 
 ---
 
@@ -83,6 +84,278 @@ Column lineage tracks:
 2. **InputField**: Represents a source column
 3. **Fields**: Maps output columns to their input columns
 4. **Dataset**: Represents a table/dataset with namespace and name
+
+---
+
+## How Column Lineage is Generated from a DAG
+
+### Overview
+
+Column lineage in Airflow is generated through the OpenLineage integration, which parses SQL statements to track data flow at the column level. Here's how it works:
+
+**Basic Flow:**
+
+```
+DAG with SQL Task → SQL Parser → Column Lineage Metadata → OpenLineage Events
+```
+
+### Example 1: Simple PostgreSQL DAG with Column Lineage
+
+```python
+from datetime import datetime
+from airflow import DAG
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+
+with DAG(
+    dag_id="column_lineage_example",
+    start_date=datetime(2024, 1, 1),
+    schedule="@daily",
+    catchup=False,
+) as dag:
+
+    # Task 1: Create a summary table from raw data
+    # Column lineage will track: order_date → order_day
+    create_summary = SQLExecuteQueryOperator(
+        task_id="create_daily_summary",
+        conn_id="postgres_conn",
+        sql="""
+            INSERT INTO daily_orders_summary (order_day, total_orders, total_revenue)
+            SELECT
+                DATE(order_date) AS order_day,
+                COUNT(*) AS total_orders,
+                SUM(amount) AS total_revenue
+            FROM orders
+            WHERE order_date >= '{{ ds }}'
+            GROUP BY DATE(order_date)
+        """
+    )
+```
+
+**What happens automatically:**
+1. **SQL Parsing**: The OpenLineage SQL parser analyzes the SQL
+2. **Column Tracking**: It identifies that:
+   - `order_day` ← derived from `orders.order_date`
+   - `total_orders` ← COUNT of orders rows
+   - `total_revenue` ← SUM of `orders.amount`
+3. **Lineage Metadata**: Creates a `ColumnLineageDatasetFacet` attached to the output dataset
+
+---
+
+### Example 2: BigQuery DAG with Multiple Transformations
+
+```python
+from airflow import DAG
+from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+from datetime import datetime
+
+with DAG(
+    dag_id="bigquery_column_lineage",
+    start_date=datetime(2024, 1, 1),
+    schedule="@daily",
+) as dag:
+
+    # Transform customer orders into analytics table
+    transform_orders = BigQueryInsertJobOperator(
+        task_id="transform_customer_orders",
+        configuration={
+            "query": {
+                "query": """
+                    INSERT INTO `project.dataset.customer_metrics`
+                        (customer_id, customer_email, order_count, total_spent, avg_order_value)
+                    SELECT
+                        c.id AS customer_id,
+                        c.email AS customer_email,
+                        COUNT(o.order_id) AS order_count,
+                        SUM(o.order_total) AS total_spent,
+                        AVG(o.order_total) AS avg_order_value
+                    FROM `project.dataset.customers` c
+                    LEFT JOIN `project.dataset.orders` o
+                        ON c.id = o.customer_id
+                    GROUP BY c.id, c.email
+                """,
+                "useLegacySql": False,
+            }
+        },
+    )
+```
+
+**Column Lineage Generated:**
+
+```json
+{
+  "columnLineage": {
+    "fields": {
+      "customer_id": {
+        "inputFields": [
+          {
+            "namespace": "bigquery",
+            "name": "project.dataset.customers",
+            "field": "id"
+          }
+        ],
+        "transformationType": "",
+        "transformationDescription": ""
+      },
+      "customer_email": {
+        "inputFields": [
+          {
+            "namespace": "bigquery",
+            "name": "project.dataset.customers",
+            "field": "email"
+          }
+        ]
+      },
+      "order_count": {
+        "inputFields": [
+          {
+            "namespace": "bigquery",
+            "name": "project.dataset.orders",
+            "field": "order_id"
+          }
+        ]
+      },
+      "total_spent": {
+        "inputFields": [
+          {
+            "namespace": "bigquery",
+            "name": "project.dataset.orders",
+            "field": "order_total"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+---
+
+### Example 3: Programmatically Generate Column Lineage
+
+You can also generate column lineage programmatically using the SQLParser:
+
+```python
+from airflow.providers.openlineage.sqlparser import SQLParser, DatabaseInfo
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+# Initialize the SQL parser
+sql_parser = SQLParser(
+    dialect='postgres',
+    default_schema='public'
+)
+
+# Create database info
+database_info = DatabaseInfo(
+    scheme='postgresql',
+    authority='localhost:5432',
+    database='mydb'
+)
+
+# Parse SQL and generate lineage
+sql = """
+    INSERT INTO customer_summary (customer_name, total_spent)
+    SELECT
+        CONCAT(first_name, ' ', last_name) AS customer_name,
+        SUM(purchase_amount) AS total_spent
+    FROM customers c
+    JOIN purchases p ON c.id = p.customer_id
+    GROUP BY c.first_name, c.last_name
+"""
+
+# Get hook for database connection
+hook = PostgresHook(postgres_conn_id='my_postgres')
+
+# Generate OpenLineage metadata including column lineage
+lineage_metadata = sql_parser.generate_openlineage_metadata_from_sql(
+    sql=sql,
+    hook=hook,
+    database_info=database_info
+)
+
+# Access the column lineage
+print("Input datasets:", lineage_metadata.inputs)
+print("Output datasets:", lineage_metadata.outputs)
+print("Column lineage:", lineage_metadata.outputs[0].facets.get('columnLineage'))
+```
+
+---
+
+### Example 4: Custom Operator with Column Lineage
+
+```python
+from airflow.models import BaseOperator
+from airflow.providers.openlineage.extractors.base import OperatorLineage
+from airflow.providers.openlineage.sqlparser import SQLParser, DatabaseInfo
+
+class MyCustomSQLOperator(BaseOperator):
+    def __init__(self, sql, database, **kwargs):
+        super().__init__(**kwargs)
+        self.sql = sql
+        self.database = database
+
+    def execute(self, context):
+        # Your execution logic
+        pass
+
+    def get_openlineage_facets_on_complete(self, task_instance):
+        """This method is called by OpenLineage to extract lineage."""
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+        hook = PostgresHook(postgres_conn_id='my_conn')
+
+        parser = SQLParser(dialect='postgres', default_schema='public')
+        db_info = DatabaseInfo(scheme='postgresql', database=self.database)
+
+        # Generate column lineage automatically
+        return parser.generate_openlineage_metadata_from_sql(
+            sql=self.sql,
+            hook=hook,
+            database_info=db_info
+        )
+```
+
+---
+
+### Key Components in the Code
+
+Based on the implementation in the Airflow codebase:
+
+1. **SQLParser.generate_openlineage_metadata_from_sql()** - Main entry point
+   - Location: `providers/openlineage/src/airflow/providers/openlineage/sqlparser.py:294`
+
+2. **SQLParser.attach_column_lineage()** - Attaches column lineage to datasets
+   - Location: `providers/openlineage/src/airflow/providers/openlineage/sqlparser.py:252`
+
+3. **BigQuery Example** - Shows real-world usage
+   - Location: `providers/google/src/airflow/providers/google/cloud/openlineage/mixins.py:363`
+   - Method: `_get_column_level_lineage_facet_for_query_job()`
+
+---
+
+### Data Structures
+
+The column lineage data structure:
+
+```python
+from openlineage.client.facet_v2 import column_lineage_dataset
+
+ColumnLineageDatasetFacet(
+    fields={
+        "output_column_name": Fields(
+            inputFields=[
+                InputField(
+                    namespace="postgresql://host:port",  # Data source
+                    name="schema.table",                  # Input table
+                    field="input_column_name"             # Input column
+                ),
+                # Multiple inputs if column derived from multiple sources
+            ],
+            transformationType="",          # e.g., "AGGREGATION", "JOIN"
+            transformationDescription=""    # Human-readable description
+        )
+    }
+)
+```
 
 ---
 
