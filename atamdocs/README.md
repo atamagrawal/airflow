@@ -13,11 +13,12 @@ The `atamdocs` folder serves as a knowledge base for:
 ## Contents
 
 ### [Column Lineage Guide](./column-lineage-guide.md)
-Comprehensive guide to understanding and implementing column-level lineage tracking in Apache Airflow.
+Comprehensive guide to understanding and implementing column-level lineage tracking in Apache Airflow using SQL-based operators.
 
 **Topics covered:**
 - Overview of column lineage concepts
 - Architecture and components
+- How lineage is generated from DAGs
 - Implementation examples (identity, SQL parsing, multi-source)
 - Provider-specific examples (BigQuery, Snowflake)
 - Custom operator implementation
@@ -29,6 +30,32 @@ Comprehensive guide to understanding and implementing column-level lineage track
 - Impact analysis for schema changes
 - Debugging data quality issues
 - Auto-generating data flow documentation
+
+**Best for:** SQL-based transformations (automatic lineage)
+
+---
+
+### [Column Lineage for Python Transformations](./column-lineage-python.md)
+Dedicated guide for implementing column lineage with Python-based transformations (Pandas, PySpark, custom Python code).
+
+**Topics covered:**
+- Why Python lineage is challenging
+- Manual column lineage implementation patterns
+- Pandas DataFrame transformation examples
+- PySpark transformation examples
+- Python to database transformations
+- Advanced patterns (mixins, decorators)
+- Best practices for Python lineage
+- Automated solutions and future directions
+
+**Use cases:**
+- Pandas-based ETL pipelines
+- PySpark data processing
+- ML feature engineering
+- Custom Python transformations
+- Mixed Python/SQL workflows
+
+**Best for:** Python-based transformations (manual lineage required)
 
 ## Usage
 
