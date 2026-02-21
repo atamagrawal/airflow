@@ -1,0 +1,122 @@
+version: '3.8'
+
+# Docker Compose for PostgreSQL + Marquez (OpenLineage)
+# This sets up everything needed to test column lineage in Airflow
+#
+# Usage:
+#   docker-compose up -d
+#   docker-compose down
+#
+# Services:
+#   - postgres: PostgreSQL database for your Airflow data
+#   - marquez-db: PostgreSQL database for Marquez
+#   - marquez-api: Marquez API server (OpenLineage backend)
+#   - marquez-web: Marquez Web UI
+
+services:
+  # PostgreSQL database for Airflow data pipelines
+  postgres:
+    image: postgres:15
+    container_name: postgres-lineage
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lineage-network
+
+  # PostgreSQL database for Marquez backend
+  marquez-db:
+    image: postgres:15
+    container_name: marquez-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+      POSTGRES_DB: marquez
+    ports:
+      - "5433:5432"  # Different port to avoid conflict
+    volumes:
+      - marquez_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "marquez"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lineage-network
+
+  # Marquez API server (OpenLineage backend)
+  marquez-api:
+    image: marquezproject/marquez:latest
+    container_name: marquez-api
+    restart: unless-stopped
+    environment:
+      # Database connection
+      MARQUEZ_DB_HOST: marquez-db
+      MARQUEZ_DB_PORT: 5432
+      MARQUEZ_DB_NAME: marquez
+      MARQUEZ_DB_USER: marquez
+      MARQUEZ_DB_PASSWORD: marquez
+
+      # API configuration
+      MARQUEZ_PORT: 5000
+      MARQUEZ_ADMIN_PORT: 5001
+
+      # Optional: Set log level
+      # MARQUEZ_LOG_LEVEL: DEBUG
+    ports:
+      - "5000:5000"  # API port
+      - "5001:5001"  # Admin port
+    depends_on:
+      marquez-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks:
+      - lineage-network
+
+  # Marquez Web UI
+  marquez-web:
+    image: marquezproject/marquez-web:latest
+    container_name: marquez-web
+    restart: unless-stopped
+    environment:
+      MARQUEZ_HOST: marquez-api
+      MARQUEZ_PORT: 5000
+    ports:
+      - "3000:3000"  # Web UI port
+    depends_on:
+      - marquez-api
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - lineage-network
+
+volumes:
+  postgres_data:
+    driver: local
+  marquez_db_data:
+    driver: local
+
+networks:
+  lineage-network:
+    driver: bridge
