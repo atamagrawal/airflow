@@ -274,12 +274,201 @@ task2 = SQLExecuteQueryOperator(
 )
 ```
 
-### 2. OpenLineage Integration
+### 2. OpenLineage Integration & Lineage Extraction
 
-SQLExecuteQueryOperator automatically generates OpenLineage facets for data lineage tracking when the OpenLineage provider is installed. It extracts:
-- Input datasets
-- Output datasets
-- Database connection information
+SQLExecuteQueryOperator automatically generates OpenLineage facets for data lineage tracking when the OpenLineage provider is installed.
+
+#### How Lineage Extraction Works
+
+The operator has two methods for extracting lineage:
+
+**1. `get_openlineage_facets_on_start()` - SQL Parse-time Lineage**
+
+Called before task execution to extract lineage from the SQL statement:
+
+```python
+def get_openlineage_facets_on_start(self) -> OperatorLineage | None:
+    """Generate OpenLineage facets on start for SQL operators."""
+```
+
+**Process:**
+1. Retrieves the SQL statement from the operator
+2. Gets the database hook and connection information
+3. Creates a `SQLParser` with the database dialect
+4. Parses SQL to extract:
+   - **Input datasets**: Tables/views being SELECT'ed or joined FROM
+   - **Output datasets**: Tables being INSERT'ed/UPDATE'ed/DELETE'ed
+   - **Schema information**: Column names and types from cursor descriptions
+5. Returns `OperatorLineage` object with extracted metadata
+
+**Example Input SQL:**
+```sql
+INSERT INTO target_table
+SELECT id, name, email
+FROM source_table
+WHERE status = 'active'
+```
+
+**Extracted Lineage:**
+- **Input Dataset**: `source_table`
+- **Output Dataset**: `target_table`
+- **Schema**: Columns from cursor description
+
+**2. `get_openlineage_facets_on_complete()` - Database-Specific Lineage**
+
+Called after task execution to extract additional database-specific lineage metadata:
+
+```python
+def get_openlineage_facets_on_complete(self, task_instance) -> OperatorLineage | None:
+    """Generate OpenLineage facets when task completes."""
+```
+
+**Process:**
+1. Calls `get_openlineage_facets_on_start()` for SQL-based lineage
+2. Calls hook's `get_openlineage_database_specific_lineage()` for database-specific info
+3. Merges both lineage sources:
+   - Combines inputs and outputs
+   - Merges run facets (execution metadata)
+   - Merges job facets (job metadata)
+
+#### Lineage Information Extracted
+
+The operator extracts the following lineage information:
+
+| Information | Source | Details |
+|-------------|--------|---------|
+| **Input Datasets** | SQL Parser | Tables/views used in FROM/JOIN clauses |
+| **Output Datasets** | SQL Parser | Tables modified by INSERT/UPDATE/DELETE |
+| **Database Connection** | Database Hook | Host, port, database name, connection type |
+| **Database Dialect** | Database Hook | SQL dialect (PostgreSQL, MySQL, MSSQL, etc.) |
+| **Schema Information** | Cursor Description | Column names and types from query results |
+| **Database-Specific Info** | Hook Implementation | Database-specific lineage (views, functions, etc.) |
+
+#### Requirements for Lineage Extraction
+
+For lineage to be automatically extracted:
+
+1. **OpenLineage Provider Installed**
+   ```bash
+   pip install apache-airflow-providers-openlineage
+   ```
+
+2. **Database Provider with OpenLineage Support**
+   - Must implement `DbApiHook` (all common-sql providers do)
+   - Must implement:
+     - `get_openlineage_database_info(connection)`
+     - `get_openlineage_database_dialect(connection)`
+     - `get_openlineage_default_schema()`
+     - `get_sqlalchemy_engine()`
+
+3. **Valid SQL Statement**
+   - SQL must be parseable by the database dialect
+   - Must contain FROM/INSERT/UPDATE/DELETE clauses
+
+#### Example with Lineage Tracking
+
+```python
+from airflow import DAG
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.utils.timezone import datetime
+
+with DAG('lineage_tracking', start_date=datetime(2021, 1, 1)) as dag:
+    # This operator will automatically extract lineage
+    extract_data = SQLExecuteQueryOperator(
+        task_id='extract_data',
+        conn_id='postgres_db',
+        sql="""
+            -- Input: source_table (extracted as input dataset)
+            -- Output: staging_table (extracted as output dataset)
+            INSERT INTO staging_table (id, name, created_at)
+            SELECT user_id, user_name, registration_date
+            FROM source_table
+            WHERE status = 'active'
+        """,
+    )
+```
+
+**Extracted Lineage Metadata:**
+```
+Input Datasets:
+  - postgres_db.public.source_table
+
+Output Datasets:
+  - postgres_db.public.staging_table
+
+Job Metadata:
+  - Database: postgres_db
+  - Dialect: postgresql
+  - Host: localhost
+  - Port: 5432
+```
+
+#### Lineage with Multiple SQL Statements
+
+When using `split_statements=True` with multiple SQL statements:
+
+```python
+multi_statement = SQLExecuteQueryOperator(
+    task_id='multi_sql',
+    conn_id='postgres_db',
+    sql=[
+        "DELETE FROM staging_table WHERE created_at < NOW() - INTERVAL 30 DAY;",
+        "INSERT INTO staging_table SELECT * FROM raw_table;",
+        "SELECT COUNT(*) FROM staging_table;"
+    ],
+    split_statements=True,
+    return_last=False,
+)
+```
+
+**Lineage Extracted:**
+- First statement: DELETE from `staging_table`
+- Second statement: INSERT INTO `staging_table`, SELECT FROM `raw_table`
+- Third statement: SELECT FROM `staging_table`
+
+**Combined Lineage:**
+- **Inputs**: `raw_table`, `staging_table` (read in SELECT)
+- **Outputs**: `staging_table` (modified by DELETE and INSERT)
+
+#### Viewing Lineage in Airflow UI
+
+Once lineage is extracted:
+
+1. **Lineage Graph Tab**: Shows visual data flow between tasks
+2. **OpenLineage Integration**: Data lineage visible in OpenLineage servers
+3. **XCom Push**: Task outputs available to downstream tasks
+
+#### Troubleshooting Lineage Extraction
+
+**Issue: Lineage Not Appearing**
+
+1. **Check OpenLineage Provider Installation**
+   ```bash
+   pip list | grep openlineage
+   ```
+
+2. **Enable Debug Logging**
+   ```python
+   # In logging config
+   'airflow.providers.common.sql.operators.sql': 'DEBUG'
+   ```
+
+3. **Verify Database Hook Support**
+   - Ensure database provider version supports OpenLineage
+   - Check hook implements required methods
+
+4. **Check SQL Syntax**
+   - SQL must be valid for the database dialect
+   - Must contain FROM/INSERT/UPDATE/DELETE clauses
+
+**Issue: Partial Lineage (Some Datasets Missing)**
+
+- **Template Variables**: SQL with Jinja2 variables may not parse correctly
+  - Solution: Verify SQL is rendered before parsing
+- **Complex Queries**: Subqueries, CTEs may not be fully parsed
+  - Solution: Check database-specific dialect support
+- **Database-Specific Features**: Some constructs may not be recognized
+  - Solution: Update database provider to latest version
 
 ### 3. Custom Database Hook Integration
 
@@ -330,6 +519,241 @@ The operator automatically selects the correct hook based on `conn_id` connectio
 2. **Multiple Statements**: Use `split_statements=True` for independent statements to enable better error handling
 3. **Parameterized Queries**: Always use `parameters` for bound variables, never string interpolation
 4. **Logging**: Disable `show_return_value_in_logs` for production with large result sets
+
+## Technical Deep-Dive: Lineage Extraction Internals
+
+### Code Flow During Task Execution
+
+When a task using `SQLExecuteQueryOperator` executes, the lineage extraction follows this flow:
+
+```
+Task Execution Starts
+    ↓
+1. get_openlineage_facets_on_start() called
+    ↓
+    a. Import OperatorLineage and SQLParser
+    b. Get SQL from operator.sql
+    c. Get database hook via self.get_db_hook()
+    d. Create SQLParser with:
+       - dialect = hook.get_openlineage_database_dialect(connection)
+       - default_schema = hook.get_openlineage_default_schema()
+    e. Call sql_parser.generate_openlineage_metadata_from_sql():
+       - Parse SQL statement
+       - Extract table names from FROM/JOIN/INSERT/UPDATE/DELETE
+       - Extract column information from cursor description
+       - Return OperatorLineage with inputs and outputs
+    ↓
+2. Task executes (execute() method runs)
+    ↓
+3. get_openlineage_facets_on_complete() called
+    ↓
+    a. Call get_openlineage_facets_on_start() again
+    b. Call hook.get_openlineage_database_specific_lineage(task_instance)
+    c. Merge both lineage sources:
+       - Combine input datasets
+       - Combine output datasets
+       - Merge run facets and job facets
+    ↓
+Lineage metadata sent to OpenLineage server
+```
+
+### SQL Parsing Mechanism
+
+#### Input: SQL Statement
+
+```python
+sql = """
+INSERT INTO staging_users (user_id, username, email)
+SELECT
+    u.id,
+    u.name,
+    u.email
+FROM raw_users u
+JOIN user_metadata m ON u.id = m.user_id
+WHERE u.created_date >= '2024-01-01'
+"""
+```
+
+#### Parsing Steps
+
+1. **Tokenize**: Break SQL into tokens
+2. **Parse AST**: Create Abstract Syntax Tree
+3. **Extract SELECT Parts**:
+   - **FROM clause**: `raw_users` (table 1)
+   - **JOIN clause**: `user_metadata` (table 2)
+4. **Extract INSERT Parts**:
+   - **INTO clause**: `staging_users` (output table)
+   - **Columns**: `user_id, username, email`
+5. **Extract Schema**:
+   - From cursor description: `[(user_id, INT), (username, VARCHAR), (email, VARCHAR)]`
+
+#### Output: Lineage Metadata
+
+```python
+OperatorLineage(
+    inputs=[
+        Dataset(
+            name='raw_users',
+            namespace='postgres://localhost:5432',
+            facets={
+                'schema': SchemaDatasetFacet(fields=[
+                    SchemaDatasetFacetFields('user_id', 'INT'),
+                    SchemaDatasetFacetFields('name', 'VARCHAR'),
+                    SchemaDatasetFacetFields('email', 'VARCHAR'),
+                ])
+            }
+        ),
+        Dataset(
+            name='user_metadata',
+            namespace='postgres://localhost:5432',
+            facets={...}
+        ),
+    ],
+    outputs=[
+        Dataset(
+            name='staging_users',
+            namespace='postgres://localhost:5432',
+            facets={
+                'schema': SchemaDatasetFacet(fields=[
+                    SchemaDatasetFacetFields('user_id', 'INT'),
+                    SchemaDatasetFacetFields('username', 'VARCHAR'),
+                    SchemaDatasetFacetFields('email', 'VARCHAR'),
+                ])
+            }
+        ),
+    ],
+    job_facets={
+        'sql': SQLJobFacet(query='INSERT INTO staging_users...'),
+    }
+)
+```
+
+### Hook Integration Points
+
+The operator relies on the database hook to provide dialect and connection information:
+
+```python
+# 1. Get database information
+database_info = hook.get_openlineage_database_info(connection)
+# Returns: DatabaseInfo(database, host, port, user, schema)
+
+# 2. Get SQL dialect for parsing
+dialect = hook.get_openlineage_database_dialect(connection)
+# Returns: "postgresql", "mysql", "mssql", etc.
+
+# 3. Get default schema
+default_schema = hook.get_openlineage_default_schema()
+# Returns: "public" (for PostgreSQL), "dbo" (for MSSQL), etc.
+
+# 4. Get SQLAlchemy engine for advanced operations
+engine = hook.get_sqlalchemy_engine()
+# Returns: SQLAlchemy engine instance for additional introspection
+
+# 5. Get database-specific lineage (optional)
+db_lineage = hook.get_openlineage_database_specific_lineage(task_instance)
+# Returns: Additional lineage metadata specific to the database
+```
+
+### Error Handling During Lineage Extraction
+
+The operator gracefully handles errors:
+
+```python
+try:
+    from airflow.providers.openlineage.extractors import OperatorLineage
+    from airflow.providers.openlineage.sqlparser import SQLParser
+except ImportError:
+    self.log.debug("OpenLineage could not import required classes. Skipping.")
+    return None  # No lineage if provider not installed
+
+if database_info is None:
+    self.log.debug("OpenLineage could not retrieve database information. Skipping.")
+    return OperatorLineage()  # Return empty lineage
+
+try:
+    sql_parser = SQLParser(...)
+except AttributeError:
+    self.log.debug("%s failed to get database dialect", hook)
+    return None  # Return None if SQL parser can't be created
+```
+
+### Example Execution Trace
+
+**DAG Definition:**
+```python
+extract_task = SQLExecuteQueryOperator(
+    task_id='extract_from_source',
+    conn_id='postgres_prod',
+    sql="INSERT INTO warehouse.dim_users SELECT * FROM raw.users WHERE active = true;",
+)
+```
+
+**Execution Trace:**
+
+```
+1. Task starts: extract_from_source
+
+2. get_openlineage_facets_on_start() called:
+   - SQL: "INSERT INTO warehouse.dim_users SELECT * FROM raw.users WHERE active = true"
+   - Hook: PostgresHook (postgres_prod connection)
+   - Dialect: postgresql
+   - Parse SQL:
+     * Input: raw.users
+     * Output: warehouse.dim_users
+   - Extract schema from cursor description
+   - Create OperatorLineage object
+
+3. execute() called:
+   - Connect to postgres_prod via PostgresHook
+   - Run INSERT query
+   - Fetch results (if required)
+   - Process output
+
+4. get_openlineage_facets_on_complete() called:
+   - Get lineage from step 2
+   - Get database-specific lineage from hook
+   - Merge both
+   - Return complete OperatorLineage
+
+5. Lineage published to OpenLineage server:
+   {
+     "eventType": "COMPLETE",
+     "inputs": [{
+       "name": "postgres_prod.raw.users",
+       "namespace": "postgres://prod.company.com:5432"
+     }],
+     "outputs": [{
+       "name": "postgres_prod.warehouse.dim_users",
+       "namespace": "postgres://prod.company.com:5432"
+     }],
+     "runId": "execute_from_source_20240222_abc123",
+     "jobName": "dag_name.extract_task",
+     "jobNamespace": "airflow://airflow_host"
+   }
+```
+
+### Supported SQL Patterns for Lineage Extraction
+
+The SQLParser can extract lineage from:
+
+| Pattern | Input Tables | Output Tables | Example |
+|---------|--------------|---------------|---------|
+| SELECT | FROM, JOIN clauses | None | `SELECT * FROM users` |
+| INSERT INTO...SELECT | FROM, JOIN clauses | INSERT destination | `INSERT INTO audit SELECT * FROM logs` |
+| UPDATE...FROM | UPDATE table, FROM joins | UPDATE table | `UPDATE users SET status = 'active' FROM user_meta WHERE...` |
+| DELETE FROM...USING | DELETE table, USING joins | DELETE table | `DELETE FROM logs USING archive WHERE date < '2020-01-01'` |
+| CTEs (WITH clauses) | Referenced tables in CTE | Referenced tables | `WITH tmp AS (SELECT * FROM source) SELECT * FROM tmp` |
+| Subqueries | Tables in subqueries | Output table | `INSERT INTO target SELECT * FROM (SELECT * FROM source) sub` |
+| UNION/INTERSECT | All tables in all queries | Combined output | `SELECT * FROM table1 UNION SELECT * FROM table2` |
+
+### Limitations and Considerations
+
+1. **Complex Nested Queries**: Deeply nested subqueries may not be fully parsed
+2. **Dynamic SQL**: SQL generated at runtime cannot be parsed statically
+3. **Stored Procedures**: If calling procedures, lineage won't capture internal tables accessed
+4. **Views**: View references are captured, but underlying tables depend on view definitions
+5. **Database-Specific Features**: Some proprietary SQL extensions may not parse correctly
+6. **Schema Inference**: Without explicit schema qualification, default schema is assumed
 
 ## Summary
 
