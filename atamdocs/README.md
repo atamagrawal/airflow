@@ -34,6 +34,32 @@ The `atamdocs` folder serves as a knowledge base for:
 
 ---
 
+### [Build and Development Setup Guide](./build-and-development-setup.md)
+**NEW** - Complete guide to building Apache Airflow from source
+
+**Topics covered:**
+- Build system architecture (UV, hatchling, pyproject.toml)
+- Quick start with UV package manager
+- Building specific components (core, providers, task-sdk)
+- Docker development with Breeze
+- End user installation from PyPI
+- Common build issues and solutions
+- Testing your build
+- IDE setup (VS Code, PyCharm)
+- Development workflow best practices
+
+**Use cases:**
+- Contributing to Airflow
+- Building from source
+- Setting up development environment
+- Working on providers or core
+- Troubleshooting build issues
+- Understanding the build system
+
+**Best for:** Contributors and developers building Airflow from source
+
+---
+
 ### [Airflow Implementation Guide](./airflow-implementation-guide.md)
 **NEW** - Comprehensive walkthrough of Apache Airflow's codebase and architecture
 
