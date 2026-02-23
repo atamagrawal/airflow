@@ -1661,7 +1661,7 @@ Do you need column lineage?
 - [Column Lineage Spec](https://openlineage.io/docs/spec/facets/dataset-facets/column-lineage)
 
 ### Related Documentation
-- [SQL Column Lineage Guide](./column-lineage-guide.md) - For SQL-based lineage
+- [SQL Column Lineage Guide](column-lineage-guide.md) - For SQL-based lineage
 - [OpenLineage Integration](https://github.com/OpenLineage/OpenLineage)
 
 ---
