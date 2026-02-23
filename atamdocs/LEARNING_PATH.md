@@ -41,6 +41,50 @@ Complete all three example DAGs in the Getting Started Guide:
 
 ---
 
+### Level 1.5: Build and Development Setup (For Contributors)
+
+**Goal:** Set up a development environment and build Airflow from source
+
+**Study This:**
+
+1.5. **[Build and Development Setup Guide](./build-and-development-setup.md)** [~45 minutes]
+   - Understand the build system
+   - Set up UV package manager
+   - Build Airflow from source
+   - Configure your IDE
+   - Learn development workflow
+
+**You'll Learn:**
+- How to build Airflow from source
+- UV package manager and workspace management
+- Building specific components (core, providers)
+- Development environment setup
+- Common build issues and solutions
+- IDE configuration
+- Running tests locally
+
+**Hands-On Exercise:**
+```
+1. Install UV package manager
+2. Clone Airflow repository
+3. Build full development environment with: uv sync --all-packages
+4. Run a test to verify your build
+5. Set up your IDE (VS Code or PyCharm)
+6. Make a small code change and test it
+```
+
+**When to Study:**
+- You want to contribute to Airflow
+- You need to build from source
+- You want to work on providers
+- You're debugging issues in Airflow core
+
+**Skip if:**
+- You only need to use Airflow (install from PyPI instead)
+- You're just learning Airflow concepts
+
+---
+
 ### Level 2: Intermediate - Core Concepts
 
 **Goal:** Understand Airflow's architecture and extend it
@@ -196,7 +240,7 @@ Focus: Building ML pipelines, feature engineering
 
 #### Software Developer (Contributing to Airflow)
 ```
-Path: 1 → 2 → 4 → 3 → 5 → 6
+Path: 1 → 1.5 → 2 → 4 → 3 → 5 → 6
 Focus: Understanding internals, contributing code
 ```
 
@@ -214,6 +258,9 @@ Focus: System design, performance, scalability
 
 **...get started quickly**
 → [Getting Started Guide](./getting-started-guide.md)
+
+**...build Airflow from source**
+→ [Build and Development Setup Guide](./build-and-development-setup.md)
 
 **...understand how Airflow works**
 → [Airflow Implementation Guide](./airflow-implementation-guide.md)
@@ -294,10 +341,11 @@ Focus: System design, performance, scalability
 
 ### Airflow User Wanting to Contribute
 1. Getting Started Guide (review)
-2. Airflow Implementation Guide (complete with code exploration)
-3. Scheduler Deep Dive (complete with code exploration)
-4. Operators and Hooks Guide (complete)
-5. Study actual Airflow source code on GitHub
+2. Build and Development Setup Guide (complete)
+3. Airflow Implementation Guide (complete with code exploration)
+4. Scheduler Deep Dive (complete with code exploration)
+5. Operators and Hooks Guide (complete)
+6. Study actual Airflow source code on GitHub
 
 ---
 
