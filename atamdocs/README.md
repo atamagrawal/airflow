@@ -101,7 +101,7 @@ Comprehensive guide to creating and using Operators and Hooks
 
 ---
 
-### [Column Lineage Guide](./column-lineage-guide.md)
+### [Column Lineage Guide](lineage/column-lineage-guide.md)
 Comprehensive guide to understanding and implementing column-level lineage tracking in Apache Airflow using SQL-based operators.
 
 **Topics covered:**
@@ -124,7 +124,7 @@ Comprehensive guide to understanding and implementing column-level lineage track
 
 ---
 
-### [Column Lineage for Python Transformations](./column-lineage-python.md)
+### [Column Lineage for Python Transformations](lineage/column-lineage-python.md)
 Dedicated guide for implementing column lineage with Python-based transformations (Pandas, PySpark, custom Python code).
 
 **Topics covered:**

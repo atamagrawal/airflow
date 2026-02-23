@@ -444,8 +444,8 @@ rm ~/airflow/dags/postgres_column_lineage_dag.py
 
 ## Related Documentation
 
-- [Column Lineage Guide](../../column-lineage-guide.md) - Comprehensive column lineage documentation
-- [Python Column Lineage](../../column-lineage-python.md) - Python-specific lineage implementation
+- [Column Lineage Guide](../column-lineage-guide.md) - Comprehensive column lineage documentation
+- [Python Column Lineage](../column-lineage-python.md) - Python-specific lineage implementation
 - [OpenLineage Documentation](https://openlineage.io/) - OpenLineage specification
 - [Marquez Documentation](https://marquezproject.ai/) - Marquez user guide
 

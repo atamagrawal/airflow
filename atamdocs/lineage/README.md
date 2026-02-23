@@ -133,7 +133,7 @@ class PythonOperatorWithLineage(BaseOperator):
         )
 ```
 
-See [Python Column Lineage Guide](../column-lineage-python.md) for details.
+See [Python Column Lineage Guide](column-lineage-python.md) for details.
 
 ## Architecture
 
@@ -426,8 +426,8 @@ disabled_for_operators = problematic.Operator
 ## Resources
 
 ### Documentation
-- [Column Lineage Guide](../column-lineage-guide.md) - Comprehensive guide
-- [Python Column Lineage](../column-lineage-python.md) - Python-specific patterns
+- [Column Lineage Guide](column-lineage-guide.md) - Comprehensive guide
+- [Python Column Lineage](column-lineage-python.md) - Python-specific patterns
 - [Airflow Implementation Docs](../airflow-implementation.md) - Implementation details
 
 ### External Resources
