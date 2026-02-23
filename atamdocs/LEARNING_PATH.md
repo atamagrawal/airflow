@@ -131,7 +131,7 @@ Complete all three example DAGs in the Getting Started Guide:
 
 **Study These:**
 
-5. **[Column Lineage Guide](./column-lineage-guide.md)** [~1 hour]
+5. **[Column Lineage Guide](lineage/column-lineage-guide.md)** [~1 hour]
    - Understand column lineage concepts
    - Implement for SQL operators
    - Set up lineage tracking
@@ -150,7 +150,7 @@ Complete all three example DAGs in the Getting Started Guide:
 - Building data catalogs
 - Debugging data quality issues
 
-6. **[Column Lineage for Python](./column-lineage-python.md)** [~1.5 hours]
+6. **[Column Lineage for Python](lineage/column-lineage-python.md)** [~1.5 hours]
    - Implement lineage for Python code
    - Handle Pandas and PySpark
    - Manual lineage patterns
@@ -225,10 +225,10 @@ Focus: System design, performance, scalability
 → [Scheduler Deep Dive](./scheduler-deep-dive.md)
 
 **...implement data lineage for SQL**
-→ [Column Lineage Guide](./column-lineage-guide.md)
+→ [Column Lineage Guide](lineage/column-lineage-guide.md)
 
 **...implement data lineage for Python**
-→ [Column Lineage for Python](./column-lineage-python.md)
+→ [Column Lineage for Python](lineage/column-lineage-python.md)
 
 **...find a specific topic**
 → [README.md](./README.md) - Detailed topic index
