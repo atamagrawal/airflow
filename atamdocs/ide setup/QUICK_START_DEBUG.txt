@@ -1,0 +1,165 @@
+================================================================================
+QUICK START: Testing Airflow Locally with Debugger
+================================================================================
+
+SUMMARY: How to Debug Airflow Tests Locally
+============================================
+
+KEY METHODS TO DEBUG AIRFLOW TESTS:
+===================================
+
+1. PYTHON DEBUGGER (pdb) - Simplest Method
+   ==========================================
+
+   Step 1: Add breakpoint() in your test code:
+   -------
+   def test_my_function():
+       result = some_function()
+       breakpoint()  # ← Execution pauses here
+       assert result == expected
+
+   Step 2: Run the test with -s flag:
+   -----------
+   pytest airflow-core/tests/unit/core/test_core.py::TestClass::test_method -s
+
+   Note: The "-s" flag is crucial - it prevents pytest from capturing output,
+   allowing you to interact with the debugger.
+
+   Common pdb commands:
+   - n = next line
+   - s = step into function
+   - c = continue execution
+   - p variable_name = print variable value
+   - q = quit debugger
+
+2. PYCHARM IDE - Most Convenient
+   =============================
+
+   Setup:
+   1. Go to PyCharm > Preferences > Tools > Python Integrated Tools
+   2. Set Default test runner to "pytest"
+   3. Select your virtual environment as project interpreter
+
+   Usage:
+   - Right-click test file → "Debug 'test_...'"
+   - Or press Ctrl+Shift+D while editing test
+   - Set breakpoints by clicking line numbers
+
+3. VISUAL STUDIO CODE
+   ===================
+
+   Setup:
+   1. Install Python extension (Cmd+Shift+X)
+   2. Open Testing view (Cmd+Shift+T)
+   3. Configure to use pytest framework
+
+   Usage:
+   - Click "Run/Debug" icons next to tests
+   - Set breakpoints and use Debug view (Cmd+Shift+D)
+
+SETUP STEPS:
+============
+
+1. Prepare Virtual Environment:
+   ---------------------------
+   cd /Users/maan/Workspace/git/airflow
+
+   Option A (Recommended - using uv):
+   uv sync --python 3.10
+   source .venv/bin/activate
+
+   Option B (Traditional):
+   python3.10 -m venv airflow_venv
+   source airflow_venv/bin/activate
+   pip install --upgrade pip setuptools wheel
+   pip install -e ./airflow-core[devel]
+
+2. Initialize Database:
+   --------------------
+   airflow db init
+
+3. Run First Test with Debugger:
+   ----------------------------
+   pytest -s airflow-core/tests/unit/core/test_core.py::TestCore::test_method
+
+   When it hits breakpoint(), you'll see (Pdb) prompt - type commands there.
+
+COMMON TEST COMMANDS:
+=====================
+
+# Run single test file
+pytest airflow-core/tests/unit/core/test_core.py -v
+
+# Run single test class
+pytest airflow-core/tests/unit/core/test_core.py::TestCore -v
+
+# Run single test method
+pytest airflow-core/tests/unit/core/test_core.py::TestCore::test_method -v
+
+# Run with verbose output and no capture
+pytest -vv -s airflow-core/tests/unit/core/test_core.py
+
+# Run with debug logging
+pytest --log-cli-level=DEBUG airflow-core/tests/unit/core/test_core.py
+
+# Run provider tests
+pytest -s providers/common/sql/tests/unit/operators/test_sql.py
+
+# Run database tests
+pytest --run-db-tests-only airflow-core/tests/unit/models/test_dag.py
+
+# Reset database between runs
+airflow db reset --yes
+
+DEBUGGING SPECIFIC PROVIDER (example):
+======================================
+
+The file you attached: providers/common/sql/src/airflow/providers/common/sql/operators/sql.py
+
+To debug tests for this provider:
+pytest -s providers/common/sql/tests/unit/operators/test_sql.py::TestSQLOperator -vv
+
+Then add breakpoint() in the test code to pause execution.
+
+TROUBLESHOOTING:
+================
+
+Issue: "AIRFLOW_HOME" not set
+Fix: export AIRFLOW_HOME=~/airflow
+
+Issue: Too many open files (macOS)
+Fix: ulimit -n 2048
+(Add to ~/.zshrc to persist: echo "ulimit -n 2048" >> ~/.zshrc)
+
+Issue: Database locked errors
+Fix: airflow db reset --yes
+
+Issue: Tests not discovered
+Fix: pip install pytest pytest-cov pytest-xdist
+
+IMPORTANT NOTES:
+================
+
+• The "-s" flag is crucial when using debugger - it keeps pytest output visible
+• Use "-vv" for more verbose output during debugging
+• Use "-k" flag to run tests matching a pattern
+• PyCharm and VSCode have visual debugger GUIs (better than pdb)
+• All changes to code are immediately reflected (local development)
+• SQLite database is used by default (no external DB needed)
+
+FOR MORE DETAILS:
+=================
+
+See the full guide at: /Users/maan/Workspace/git/airflow/LOCAL_DEBUGGING_GUIDE.md
+
+It contains:
+- Detailed IDE setup instructions
+- pdb command reference
+- Multiple testing patterns
+- Database configuration options
+- Tips for efficient debugging
+- Advanced troubleshooting
+- Running tests using Breeze environment
+
+================================================================================
+
