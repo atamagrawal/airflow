@@ -37,7 +37,7 @@ from airflow.providers.standard.operators.python import PythonOperator
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Import our custom operators
-from sample_data_filter_operator import DataAggregationOperator, DataFilterOperator
+from dev.sample_data_filter_operator import DataAggregationOperator, DataFilterOperator
 
 
 def generate_sample_data(**context):
@@ -126,34 +126,3 @@ with DAG(
     # then process_results runs last
     generate_data >> [filter_high, count_low, aggregate] >> process_results
 
-
-# ============================================================================
-# Example: Simpler DAG with static data
-# ============================================================================
-
-with DAG(
-    dag_id="example_simple_data_filter",
-    start_date=datetime(2024, 1, 1),
-    schedule=None,
-    catchup=False,
-    tags=["example", "tutorial", "simple"],
-) as simple_dag:
-    # Use static data directly
-    filter_task = DataFilterOperator(
-        task_id="filter_static_data",
-        data=[10, 25, 30, 50, 75, 100, 125],
-        threshold=50,
-        operator="gte",
-    )
-
-    def print_results(**context):
-        ti = context["ti"]
-        result = ti.xcom_pull(task_ids="filter_static_data")
-        print(f"Filtered values >= 50: {result}")
-
-    print_task = PythonOperator(
-        task_id="print_filtered_results",
-        python_callable=print_results,
-    )
-
-    filter_task >> print_task

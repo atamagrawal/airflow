@@ -210,6 +210,9 @@ dmypy.json
 .build
 /tmp
 /files
+!files/
+!files/dags/
+!files/dags/*
 
 /hive_scratch_dir/
 /.bash_aliases
@@ -299,3 +302,4 @@ dev/registry/output/
 dev/registry/logos/
 dev/registry/modules.json
 dev/registry/providers.json
+files/mprocs.yaml
