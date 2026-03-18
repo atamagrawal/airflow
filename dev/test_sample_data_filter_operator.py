@@ -36,7 +36,7 @@ from pathlib import Path
 # Add dev directory to path so we can import the sample operator
 sys.path.insert(0, str(Path(__file__).parent))
 
-from sample_data_filter_operator import DataAggregationOperator, DataFilterOperator
+from dev.atam.custom.sample_data_filter_operator import DataAggregationOperator, DataFilterOperator
 
 
 class TestDataFilterOperator:

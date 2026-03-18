@@ -38,8 +38,7 @@ from airflow.providers.standard.operators.python import PythonOperator
 # Add dev directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from dev.json_validator_operator import JsonValidatorOperator
-
+from dev.atam.custom.json_validator_operator import JsonValidatorOperator
 
 # ============================================================================
 # Helper Functions

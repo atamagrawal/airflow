@@ -37,7 +37,7 @@ from airflow.providers.standard.operators.python import PythonOperator
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Import our custom operators
-from dev.sample_data_filter_operator import DataAggregationOperator, DataFilterOperator
+from dev.atam.custom.sample_data_filter_operator import DataAggregationOperator, DataFilterOperator
 
 
 def generate_sample_data(**context):
