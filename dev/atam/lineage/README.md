@@ -4,13 +4,55 @@ A custom Airflow operator for data transformations that automatically emits line
 
 ## Overview
 
-**`DataTransformOperator`** is designed for data transformations - lineage emission is a byproduct, not the primary purpose.
+This directory contains two versions of data transformation operators that emit lineage:
+
+### Version 1: DataTransformOperator
+Explicit lineage configuration - you specify both the transformation AND the lineage.
+
+### Version 2: DataTransformOperatorV2 (Recommended)
+**Automatic lineage inference** - you specify the transformation, lineage is inferred automatically!
 
 Just like:
-- `SQLExecuteQueryOperator` → executes SQL (and emits lineage as a side effect)
-- `DataTransformOperator` → transforms data (and emits lineage as a side effect)
+- `SQLExecuteQueryOperator` → executes SQL, **parses it** to extract lineage
+- `DataTransformOperatorV2` → transforms data, **infers** lineage from transformation config
+
+## Which Version to Use?
+
+**Use V2** - it's more realistic and similar to how real operators work:
+- ✅ Lineage inferred from work (like SQLExecuteQueryOperator)
+- ✅ Less configuration required
+- ✅ Lineage stays in sync with transformations
+
+**V1** is kept for reference but requires explicit lineage configuration.
 
 ## Quick Start
+
+### V2 - Automatic Lineage Inference (Recommended)
+
+```python
+from dev.atam.lineage.transform_operator_v2 import DataTransformOperatorV2
+
+# Just specify WHAT to do - lineage is inferred automatically!
+task = DataTransformOperatorV2(
+    task_id="daily_summary",
+    source_table="public.orders",
+    dest_table="public.daily_summary",
+    source_namespace="postgres://localhost:5432/prod",
+    columns=[
+        {"name": "order_date", "expr": "order_date"},       # Infers: IDENTITY
+        {"name": "total_amount", "expr": "SUM(amount)"},    # Infers: AGGREGATE
+        {"name": "order_count", "expr": "COUNT(order_id)"}, # Infers: AGGREGATE
+    ],
+    group_by_columns=["order_date"]
+)
+# Lineage automatically inferred:
+# - Table: public.orders → public.daily_summary
+# - Columns: order_date ← order_date (IDENTITY)
+#            total_amount ← amount (AGGREGATE: SUM)
+#            order_count ← order_id (AGGREGATE: COUNT)
+```
+
+### V1 - Explicit Lineage Configuration
 
 ```python
 from dev.atam.lineage.transform_operator import DataTransformOperator
@@ -33,7 +75,7 @@ task = DataTransformOperator(
         "namespace": "postgres://localhost:5432/prod",
         "name": "public.daily_summary"
     },
-    column_lineage={
+    column_lineage={  # ← Must explicitly specify lineage
         "total_amount": {
             "source": "amount",
             "type": "AGGREGATE",
@@ -84,15 +126,56 @@ The operator automatically tracks:
   - `total_amount` ← `amount` (AGGREGATE)
   - `order_count` ← `order_id` (AGGREGATE)
 
+## How V2 Infers Lineage
+
+`DataTransformOperatorV2` analyzes transformation expressions to infer lineage automatically:
+
+### Expression Analysis
+
+```python
+# Expression: "order_id"
+# Infers: IDENTITY transformation (direct copy)
+
+# Expression: "SUM(amount)"
+# Infers: AGGREGATE transformation, source column = amount
+
+# Expression: "COUNT(order_id)"
+# Infers: AGGREGATE transformation, source column = order_id
+
+# Expression: "ROUND(amount, 2)"
+# Infers: TRANSFORM transformation, source column = amount
+
+# Expression: "DATE(created_at)"
+# Infers: TRANSFORM transformation, source column = created_at
+```
+
+The operator parses expressions similar to how `SQLExecuteQueryOperator` parses SQL!
+
+### Inference Logic
+
+1. **Check for aggregation functions**: `SUM`, `COUNT`, `AVG`, `MAX`, `MIN`
+   - Type: `AGGREGATE`
+   - Extracts source column from function argument
+
+2. **Check for transformation functions**: `DATE`, `ROUND`, `UPPER`, `LOWER`, `CAST`
+   - Type: `TRANSFORM`
+   - Extracts source column from function argument
+
+3. **Default to identity**: If no function detected
+   - Type: `IDENTITY`
+   - Expression itself is the source column
+
 ## Comparison with SQLExecuteQueryOperator
 
-| Aspect | SQLExecuteQueryOperator | DataTransformOperator |
-|--------|------------------------|----------------------|
-| **Primary Purpose** | Execute SQL queries | Execute Python transformations |
-| **Lineage** | Parsed from SQL automatically | Configured explicitly |
-| **Use Case** | Database operations | Custom Python logic, API calls, etc. |
-| **Transformation Logic** | SQL statements | Python functions |
-| **Lineage as** | Byproduct of SQL parsing | Byproduct of transformation config |
+| Aspect | SQLExecuteQueryOperator | DataTransformOperatorV2 | DataTransformOperator (V1) |
+|--------|------------------------|------------------------|---------------------------|
+| **Primary Purpose** | Execute SQL queries | Execute transformations | Execute transformations |
+| **Lineage Source** | Parsed from SQL automatically | Inferred from config automatically | Configured explicitly |
+| **User Provides** | SQL query | Transformation config | Transformation + lineage |
+| **Lineage Method** | SQL parser analyzes query | Expression analyzer | Manual specification |
+| **Use Case** | Database operations | Python/config transformations | Custom logic with manual lineage |
+| **Lineage as** | Byproduct of SQL parsing | Byproduct of config analysis | Explicit input |
+| **Most Similar To** | - | ✅ **SQLExecuteQueryOperator** | PythonOperator + lineage config |
 
 ## Configuration
 
@@ -471,15 +554,30 @@ If lineage isn't appearing, check:
 
 ## Files
 
-- **`transform_operator.py`** - Main operator implementation
-- **`example_transform_dag.py`** - Example DAG with real transformations
+### Recommended (V2 - Automatic Lineage Inference)
+- **`transform_operator_v2.py`** - V2 operator with automatic lineage inference
+- **`example_transform_dag_v2.py`** - V2 example DAG showing automatic lineage
+
+### Reference (V1 - Explicit Lineage)
+- **`transform_operator.py`** - V1 operator with explicit lineage configuration
+- **`example_transform_dag.py`** - V1 example DAG with explicit lineage
+
+### Documentation
 - **`README.md`** - This documentation
 
 ## Summary
 
-`DataTransformOperator` is a **data transformation operator** where:
+### DataTransformOperatorV2 (Recommended)
+A **data transformation operator** that works like `SQLExecuteQueryOperator`:
 - **Primary purpose**: Execute data transformations
-- **Secondary benefit**: Automatic lineage emission
-- **Similar to**: SQLExecuteQueryOperator (but for Python transformations)
+- **Lineage**: Automatically inferred from transformation config (like SQL parsing)
+- **User provides**: Transformation specification (WHAT to do)
+- **Operator does**: Infers lineage automatically (HOW data flows)
 
-The focus is on doing the work - lineage is the value-added metadata that comes automatically.
+### DataTransformOperator (V1)
+Reference implementation with explicit lineage:
+- **Primary purpose**: Execute data transformations
+- **Lineage**: Explicitly configured by user
+- **Use case**: Custom scenarios where automatic inference isn't possible
+
+**The key insight**: Like `SQLExecuteQueryOperator`, V2 analyzes what you're doing and figures out lineage automatically - you don't specify it explicitly!
