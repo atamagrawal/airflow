@@ -750,4 +750,155 @@ Build the `/secrets` endpoints. Write to Secrets Manager, patch Kubernetes Secre
 
 ---
 
+---
+
+## 10. Scaling to 2,000+ Tenants — Cluster Sharding
+
+### The problem with one cluster
+
+A single EKS cluster has practical limits that break down well before 2,000 tenants:
+
+| Limit | Threshold | Impact |
+|---|---|---|
+| Nodes per cluster | ~150–300 | API server degrades beyond this |
+| Namespaces per cluster | ~500 | etcd watch pressure slows control loops |
+| Pods per cluster | ~110,000 | Kubernetes hard limit (300 nodes × 110 pods) |
+
+At 3 namespaces per tenant (dev, preprod, prod) × 2,000 tenants = **6,000 namespaces** on one cluster — this is not viable.
+
+### The solution: cluster sharding
+
+Your control plane manages a **fleet of EKS clusters**, not one. Each cluster holds ~100 tenants. 2,000 tenants = ~20 clusters. The control plane decides which cluster each tenant lands on — tenants never know or care which cluster they're on.
+
+This is exactly how Astronomer operates. Their standard cluster is a multi-tenant cluster holding many Deployments; when one fills up, their control plane routes new tenants to a new cluster automatically.
+
+---
+
+### Cluster registry
+
+Add a cluster registry table to your control plane (DynamoDB):
+```
+ClusterID        | Region    | TenantCount | MaxTenants | Status
+cluster-use1-01  | us-east-1 | 98          | 100        | NEAR_FULL
+cluster-use1-02  | us-east-1 | 54          | 100        | AVAILABLE
+cluster-euw1-01  | eu-west-1 | 12          | 100        | AVAILABLE
+```
+
+And a tenant-to-cluster mapping table:
+```
+TenantID   | ClusterID       | Region    | Namespaces
+acme       | cluster-use1-02 | us-east-1 | dev, preprod, prod
+globex     | cluster-use1-01 | us-east-1 | prod
+initech    | cluster-euw1-01 | eu-west-1 | dev, prod
+```
+
+---
+
+### Provisioner placement logic
+
+The provisioner gains one extra step — find the right cluster before creating the namespace:
+```python
+def place_tenant(tenant_id, tier, region):
+    # 1. Find a cluster in region with capacity under 75%
+    cluster = cluster_registry.find_available(
+        region=region,
+        tier="standard",
+        max_utilization=0.75
+    )
+
+    # 2. If none available, provision a new EKS cluster (~15 min async)
+    if not cluster:
+        cluster = provision_new_cluster(region=region)
+        cluster_registry.register(cluster)
+
+    # 3. Place tenant on that cluster
+    namespace = f"airflow-{tenant_id}-prod"
+    deploy_to_cluster(cluster.id, namespace, tenant_id)
+
+    # 4. Record the mapping
+    cluster_registry.assign(tenant_id=tenant_id, cluster_id=cluster.id)
+    cluster_registry.increment(cluster.id)
+```
+
+The rest of the provisioning flow (Helm install, S3, Aurora, Route 53) is unchanged — it just runs against the selected cluster's kubeconfig.
+
+---
+
+### Lazy namespace provisioning
+
+Don't create all three environments (dev, preprod, prod) upfront. Only create what the tenant actually uses:
+```
+Tenant signs up           → provision prod namespace only
+Tenant requests dev       → provision dev namespace on-demand
+Tenant deletes dev        → delete namespace, reclaim resources
+Tenant inactive 90 days   → hibernate prod, flag for review
+```
+
+For 2,000 tenants where only ~30% actively use dev at any time:
+```
+Without lazy provisioning:  2,000 × 3 = 6,000 namespaces
+With lazy provisioning:     2,000 prod + 600 active dev + 400 preprod = 3,000 namespaces
+Cluster count reduction:    20 clusters → ~10 clusters
+```
+
+---
+
+### Hibernated namespaces are nearly free
+
+Dev namespaces scaled to zero (scheduler + webserver at 0 replicas) consume **no nodes** — they exist only as metadata in etcd. This means you can pack hibernated dev namespaces densely without affecting node capacity.
+
+Practical packing density per cluster:
+```
+100 prod namespaces     × ~10 pods each  = 1,000 active pods
+100 preprod namespaces  × ~6 pods each   =   600 active pods
+200 dev namespaces      (hibernated)     =     0 pods at night
+
+Total active pods:   ~1,600  (well within the 110,000 pod limit)
+Total namespaces:    ~400    (manageable for etcd)
+Cluster node count:  ~20–30 nodes at night, ~50 at peak
+```
+
+---
+
+### Dedicated clusters for enterprise tenants
+
+Some customers will require full cluster isolation (compliance, network policy, data residency). Offer a **dedicated cluster** tier:
+
+- 1 EKS cluster per tenant
+- All three environments (dev, preprod, prod) on that cluster
+- Tenant pays a cluster-level base fee on top of usage
+- Your control plane provisions and manages it identically — just a cluster with one tenant
+
+This maps directly to Astronomer's dedicated cluster offering.
+
+---
+
+### Scaling summary
+
+| Tenants | Clusters needed | Architecture change |
+|---|---|---|
+| 1–100 | 1 | Single EKS cluster, no cluster registry needed |
+| 100–500 | 2–5 | Add cluster registry, manual cluster addition |
+| 500–2,000 | 5–20 | Auto-provision new clusters when existing ones hit 75% |
+| 2,000+ | 20+ | Same model — no architecture change, just more clusters |
+
+The control plane code does not change as you scale beyond v1. The cluster registry and placement logic handle growth automatically. Each cluster is operationally identical — adding capacity means running another Terraform module, not redesigning anything.
+
+---
+
+### Auto-provision trigger (Step Functions addition)
+
+Add one state to your existing provisioning state machine:
+```
+VALIDATE → FIND_OR_CREATE_CLUSTER → CREATE_NAMESPACE → DEPLOY_HELM → CREATE_DNS → NOTIFY → DONE
+```
+
+The `FIND_OR_CREATE_CLUSTER` state:
+1. Queries the cluster registry for an available cluster in the target region
+2. If found — returns `cluster_id`, state machine proceeds
+3. If not found — triggers a sub-state-machine that provisions a new EKS cluster, waits for it to become ready (~15 min), registers it, then returns `cluster_id`
+4. The rest of the flow is unchanged
+
+This means tenant provisioning is fully automatic even when a new cluster needs to be spun up — it just takes longer for that first tenant on a fresh cluster.
+
 *Blueprint version 1.0 — covers deployment model (dev / pre-prod / prod) with hibernation, ephemeral environments, and secrets isolation on AWS EKS.*
