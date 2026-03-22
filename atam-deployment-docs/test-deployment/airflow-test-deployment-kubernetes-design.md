@@ -1,8 +1,23 @@
 # Airflow Test Deployment on Kubernetes (EKS) — Design Document
+## Single Namespace, Label-Based Session Management
 
-**Version:** 1.0  
+**Version:** 2.0  
 **Date:** March 2026  
-**Status:** Draft
+**Status:** Draft  
+**Supersedes:** Version 1.0 (namespace-per-session approach)
+
+---
+
+## Changelog from v1.0
+
+| Change | v1.0 | v2.0 |
+|---|---|---|
+| Isolation model | One namespace per session | One shared namespace, labels per session |
+| Cleanup | `kubectl delete namespace` | `kubectl delete --selector session-id=X` |
+| API server load | High (1000s of namespace objects) | Low (pods + deployments only) |
+| NetworkPolicy | Per-namespace (automatic cascade) | Per-session pod label selector |
+| Resource governance | ResourceQuota per namespace | LimitRange on namespace + pod-level limits |
+| Debugging | `-n session-{id}` | `-l session-id={id}` |
 
 ---
 
@@ -10,171 +25,167 @@
 
 1. [Overview](#1-overview)
 2. [Goals & Non-Goals](#2-goals--non-goals)
-3. [Why Kubernetes Over ECS Fargate](#3-why-kubernetes-over-ecs-fargate)
+3. [Why Single Namespace](#3-why-single-namespace)
 4. [Architecture](#4-architecture)
 5. [EKS Cluster Setup](#5-eks-cluster-setup)
 6. [Container & Image Design](#6-container--image-design)
-7. [Kubernetes Resource Manifests](#7-kubernetes-resource-manifests)
-8. [Session Lifecycle Management](#8-session-lifecycle-management)
-9. [API Layer](#9-api-layer)
-10. [Networking & Ingress Routing](#10-networking--ingress-routing)
-11. [Namespace Isolation Strategy](#11-namespace-isolation-strategy)
-12. [Security](#12-security)
-13. [Cost Optimization](#13-cost-optimization)
-14. [Deployment Guide](#14-deployment-guide)
-15. [Monitoring & Observability](#15-monitoring--observability)
-16. [Appendix: Design Decisions](#16-appendix-design-decisions)
+7. [Labeling & Naming Convention](#7-labeling--naming-convention)
+8. [Kubernetes Resource Manifests](#8-kubernetes-resource-manifests)
+9. [Session Lifecycle Management](#9-session-lifecycle-management)
+10. [API Layer](#10-api-layer)
+11. [Networking & Ingress Routing](#11-networking--ingress-routing)
+12. [Isolation Strategy](#12-isolation-strategy)
+13. [Security](#13-security)
+14. [Cost Optimization](#14-cost-optimization)
+15. [Deployment Guide](#15-deployment-guide)
+16. [Monitoring & Observability](#16-monitoring--observability)
+17. [Appendix: Design Decisions](#17-appendix-design-decisions)
 
 ---
 
 ## 1. Overview
 
-This document describes the design for an **on-demand, per-session Airflow test deployment system** built on **Amazon EKS (Elastic Kubernetes Service)**. It is the most scalable and customizable of the three deployment approaches (EC2, ECS Fargate, Kubernetes), designed for platforms expecting **hundreds of concurrent sessions** with sub-30-second startup times, warm pod pools, and fine-grained resource governance.
+This document describes the design for an **on-demand, per-session Airflow test deployment system** built on **Amazon EKS**. All sessions share a **single Kubernetes namespace**. Each session's resources — webserver, scheduler, PostgreSQL — are just labeled containers running inside that namespace, identified and managed entirely through Kubernetes label selectors.
 
 ### Key Principle
 
-> One session = One Kubernetes Namespace = One isolated Airflow stack
+> One session = One set of labeled Pods in a shared namespace
 
-Each customer session is deployed into a dedicated Kubernetes namespace. All Airflow components — webserver, scheduler, PostgreSQL — run as Pods within that namespace, fully isolated from every other session at the network and resource level.
+Kubernetes is a container orchestrator at its core. Namespaces are a logical grouping mechanism designed for long-lived, persistent tenants — not for ephemeral short-lived sessions. For test deployments, labels are the right tool. A session is created by applying labeled resources and terminated by deleting everything with that label.
 
-### Comparison Across All Three Approaches
+### Mental Model
 
-| Dimension | EC2 | ECS Fargate | Kubernetes (EKS) |
-|---|---|---|---|
-| Startup time | 3–5 min | 30–60 sec | **10–30 sec (warm pool)** |
-| Concurrent sessions | ~16 (quota) | Hundreds | **Thousands** |
-| Infrastructure control | Low | Medium | **Full** |
-| Warm pod pools | ❌ | ❌ | **✅** |
-| Multi-cloud portability | ❌ | ❌ | **✅** |
-| Custom scheduling | ❌ | ❌ | **✅** |
-| Operational complexity | Low | Medium | High |
-| Cluster baseline cost | $0 | $0 | ~$150–300/month |
-| Best fit | Small scale | Medium scale | **Large scale** |
+Think of it exactly like Docker Compose, but on Kubernetes:
+
+```
+Docker Compose (local):
+  docker compose -p session-abc up    # All containers prefixed with session-abc
+  docker compose -p session-abc down  # All containers removed
+
+Kubernetes (single namespace):
+  kubectl apply -l session-id=abc     # All pods labeled session-id=abc
+  kubectl delete -l session-id=abc    # All pods removed
+```
 
 ---
 
 ## 2. Goals & Non-Goals
 
 ### Goals
-- Support hundreds of concurrent customer test sessions
-- Launch a fully functional Airflow environment in under 30 seconds using warm pod pools
-- Provide complete namespace-level isolation between sessions
-- Enable fine-grained resource quotas per session
-- Support multi-region and multi-cloud deployments
-- Auto-scale cluster nodes based on session load
+- Support hundreds of concurrent customer test sessions in a single namespace
+- Launch a fully functional Airflow environment in under 30 seconds
+- Keep Kubernetes API server load low — no namespace proliferation
+- Isolate sessions at the network and resource level using pod-level policies
 - Automatically terminate sessions after TTL expiry
+- Make debugging simple — query any session with a single label selector
 
 ### Non-Goals
 - Not a production Airflow environment
 - No persistent DAG storage between sessions
-- No Kubernetes expertise required from customers (they only interact with the API)
-- No multi-tenancy within a single session
+- No multi-user access within a single session
+- No namespace-level hard isolation (use ECS Fargate if VM-level isolation is required)
 
 ---
 
-## 3. Why Kubernetes Over ECS Fargate
+## 3. Why Single Namespace
 
-### Where Kubernetes Wins
+### The Problem with Namespace-Per-Session
 
-**1. Warm Pod Pools (Virtual Cluster Pre-warming)**
-
-ECS Fargate always starts containers cold. Kubernetes lets you maintain a pool of pre-warmed, pre-pulled pods that are reassigned to new sessions instantly:
+Namespaces in Kubernetes carry overhead that compounds at scale:
 
 ```
-ECS Fargate session start:
-  Task provision + image pull + Airflow init = 30–60 sec every time
+100 sessions (namespace-per-session):
+  100 Namespace objects
+  100 ResourceQuota objects
+  100 NetworkPolicy objects
+  100 × ~12 pods, deployments, services, secrets
+  ─────────────────────────────────────────────
+  ~1,400 objects tracked by the API server simultaneously
 
-Kubernetes with warm pool:
-  Assign pre-warmed namespace = 5–10 sec
+100 sessions (single namespace):
+  ~12 pods, deployments, services, secrets × 100
+  ─────────────────────────────────────────────
+  ~1,200 objects — same pods, NO namespace overhead
+  API server doesn't need to reconcile namespace metadata
 ```
 
-**2. Namespace-Level Isolation**
+Beyond object count, namespace proliferation causes:
+- `kubectl get namespaces` returns hundreds of rows — operational noise
+- etcd grows faster — namespace metadata stored for every object
+- RBAC becomes more complex — namespace-scoped roles multiply
+- Admission webhooks fire per-namespace configuration, adding latency
 
-Kubernetes namespaces provide a richer isolation model than ECS task boundaries:
-- Independent RBAC per namespace
-- Network policies blocking cross-session traffic
-- Resource quotas enforced at namespace level
-- Independent service discovery (DNS is namespace-scoped)
+### Why Single Namespace Works Here
 
-**3. Node Autoscaling (Karpenter)**
+Sessions are **ephemeral and homogeneous** — they all run the same Airflow stack with the same resource requirements. Namespaces solve problems like:
+- Different teams needing different RBAC
+- Different environments (dev/staging/prod) needing different policies
+- Long-lived tenants with different quota requirements
 
-Kubernetes with Karpenter can provision new EC2 nodes in ~60 seconds and bin-pack sessions efficiently — at 500 concurrent sessions, Karpenter will pack them onto nodes far more efficiently than ECS Fargate's per-task model.
-
-**4. Custom Scheduling**
-
-You can enforce policies like:
-- "Pin GPU-heavy sessions to GPU nodes"
-- "Run free-tier sessions on spot nodes, paid sessions on on-demand nodes"
-- "Spread sessions across AZs for resilience"
-
-None of this is possible with ECS Fargate.
-
-**5. Multi-Cloud**
-
-If you ever need to offer this on GCP (GKE) or Azure (AKS), the same Kubernetes manifests work unchanged. ECS Fargate is AWS-only.
+None of these apply to test sessions. Labels are the right primitive.
 
 ---
 
 ## 4. Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────────────┐
-│                        Many Customers                                  │
-│                    (Browser / API Clients)                             │
-└───────────────────────────┬───────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                        Many Customers                                 │
+│                    (Browser / API Clients)                            │
+└───────────────────────────┬──────────────────────────────────────────┘
                             │  POST /sessions/start
                             ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│                    Session Manager API                                 │
-│             (FastAPI — deployed as EKS Deployment)                    │
+┌──────────────────────────────────────────────────────────────────────┐
+│                    Session Manager API                                │
+│             (FastAPI — runs in namespace: system)                    │
 │                                                                       │
-│  - Validates customer token                                           │
-│  - Creates Kubernetes Namespace per session                           │
-│  - Applies Airflow Helm chart or raw manifests                        │
-│  - Registers Ingress rule for routing                                 │
+│  - Generates session ID                                               │
+│  - Creates labeled K8s resources in airflow-sessions namespace        │
+│  - Registers Ingress rule                                             │
 │  - Tracks session state in DynamoDB                                   │
-└───────────────────────────┬───────────────────────────────────────────┘
-                            │  Kubernetes API (kubectl / client-python)
+│  - Returns Airflow URL                                                │
+└───────────────────────────┬──────────────────────────────────────────┘
+                            │  Kubernetes Python Client
                             ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│                        Amazon EKS Cluster                              │
+┌──────────────────────────────────────────────────────────────────────┐
+│                       Amazon EKS Cluster                              │
 │                                                                       │
-│  ┌──────────────────────┐   ┌──────────────────────┐                 │
-│  │ ns: session-abc-123  │   │ ns: session-def-456  │  ... N sessions │
-│  │                      │   │                      │                 │
-│  │ Deployment: webserver│   │ Deployment: webserver│                 │
-│  │ Deployment: scheduler│   │ Deployment: scheduler│                 │
-│  │ StatefulSet: postgres│   │ StatefulSet: postgres│                 │
-│  │ Service: webserver   │   │ Service: webserver   │                 │
-│  │ NetworkPolicy: deny  │   │ NetworkPolicy: deny  │                 │
-│  │ ResourceQuota        │   │ ResourceQuota        │                 │
-│  └──────────────────────┘   └──────────────────────┘                 │
+│  namespace: airflow-sessions  (ONE namespace for ALL sessions)        │
+│  ┌─────────────────────────────────────────────────────────────┐     │
+│  │                                                             │     │
+│  │  session-id=abc123          session-id=def456              │     │
+│  │  ┌──────────────────┐       ┌──────────────────┐           │     │
+│  │  │ webserver-abc123 │       │ webserver-def456  │   ...    │     │
+│  │  │ scheduler-abc123 │       │ scheduler-def456  │          │     │
+│  │  │ postgres-abc123  │       │ postgres-def456   │          │     │
+│  │  │ (Service, PVC,   │       │ (Service, PVC,    │          │     │
+│  │  │  Secret)         │       │  Secret)          │          │     │
+│  │  └──────────────────┘       └──────────────────┘           │     │
+│  │                                                             │     │
+│  │  NetworkPolicy: pods can only talk to same session-id label │     │
+│  │  LimitRange: per-pod CPU/memory bounds                      │     │
+│  └─────────────────────────────────────────────────────────────┘     │
 │                                                                       │
+│  namespace: system                                                    │
 │  ┌──────────────────────────────────────────────────────────────┐    │
-│  │              System Namespaces                               │    │
-│  │  ns: session-manager  — Session Manager API                  │    │
-│  │  ns: ingress-nginx    — NGINX Ingress Controller             │    │
-│  │  ns: karpenter        — Node autoscaler                      │    │
-│  │  ns: monitoring       — Prometheus + Grafana                 │    │
+│  │  Session Manager API                                         │    │
+│  │  NGINX Ingress Controller                                    │    │
+│  │  Karpenter (node autoscaler)                                 │    │
+│  │  Prometheus + Grafana                                        │    │
 │  └──────────────────────────────────────────────────────────────┘    │
 │                                                                       │
-│  Node Group A (on-demand)      Node Group B (spot)                   │
-│  ┌──────────┐ ┌──────────┐    ┌──────────┐ ┌──────────┐             │
-│  │ m5.xlarge│ │ m5.xlarge│    │ m5.large │ │ m5.large │             │
-│  └──────────┘ └──────────┘    └──────────┘ └──────────┘             │
-└───────────────────────────────────────────────────────────────────────┘
-           │                          │
-           ▼                          ▼
+│  Node Group (on-demand + spot, bin-packed)                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
+│  │  m5.xlarge   │  │  m5.xlarge   │  │  m5.xlarge   │               │
+│  │  session A   │  │  session C   │  │  session E   │               │
+│  │  session B   │  │  session D   │  │  session F   │               │
+│  └──────────────┘  └──────────────┘  └──────────────┘               │
+└──────────────────────────────────────────────────────────────────────┘
+           │                           │
+           ▼                           ▼
 ┌──────────────────┐       ┌─────────────────────────┐
 │    DynamoDB      │       │   NGINX Ingress          │
-│  Session State   │       │   Path-based routing     │
-│  TTL tracking    │       │   /session/{id}/*        │
-└──────────────────┘       └─────────────────────────┘
-           │                          │
-           ▼                          ▼
-┌──────────────────┐       ┌─────────────────────────┐
-│  EventBridge     │       │   Amazon ECR             │
-│  TTL → Lambda    │       │   Pre-pulled image cache │
+│  Session State   │       │   /session/{id}/*        │
 └──────────────────┘       └─────────────────────────┘
 ```
 
@@ -195,15 +206,15 @@ metadata:
   version: "1.29"
 
 iam:
-  withOIDC: true   # Required for IRSA (IAM Roles for Service Accounts)
+  withOIDC: true    # Required for IRSA
 
 managedNodeGroups:
 
-  # On-demand node group for session-manager and system components
+  # System node group — session manager, ingress, monitoring
   - name: system
     instanceType: m5.large
     minSize: 2
-    maxSize: 5
+    maxSize: 4
     desiredCapacity: 2
     labels:
       role: system
@@ -212,18 +223,17 @@ managedNodeGroups:
         value: system
         effect: NoSchedule
 
-  # On-demand node group for paid / production customer sessions
+  # Session workload node group — on-demand, bin-packed
   - name: sessions-ondemand
-    instanceType: m5.xlarge    # 4 vCPU, 16 GB — fits ~4 sessions per node
+    instanceType: m5.xlarge    # 4 vCPU, 16 GB — fits 2–3 sessions per node
     minSize: 1
     maxSize: 50
     desiredCapacity: 2
     labels:
       role: session
       tier: ondemand
-    spot: false
 
-  # Spot node group for free-tier / trial customer sessions
+  # Spot node group for cost-saving on free-tier sessions
   - name: sessions-spot
     instanceTypes:
       - m5.xlarge
@@ -241,20 +251,22 @@ addons:
   - name: vpc-cni
   - name: coredns
   - name: kube-proxy
-  - name: aws-ebs-csi-driver    # For persistent volumes if needed
+  - name: aws-ebs-csi-driver
 ```
 
 ```bash
-# Create the cluster
+# Create cluster
 eksctl create cluster -f cluster/cluster.yaml
 
-# Verify
-kubectl get nodes -L role,tier
+# Update kubeconfig
+aws eks update-kubeconfig --name airflow-test-cluster --region us-east-1
+
+# Create the two core namespaces (that's it — no per-session namespaces ever)
+kubectl create namespace airflow-sessions
+kubectl create namespace system
 ```
 
 ### 5.2 Karpenter — Node Autoscaler
-
-Karpenter provisions new nodes automatically when sessions can't be scheduled:
 
 ```yaml
 # cluster/karpenter-nodepool.yaml
@@ -277,19 +289,14 @@ spec:
         - key: node.kubernetes.io/instance-type
           operator: In
           values: ["m5.xlarge", "m5a.xlarge", "m5.2xlarge"]
-        - key: topology.kubernetes.io/zone
-          operator: In
-          values: ["us-east-1a", "us-east-1b", "us-east-1c"]
-      kubelet:
-        maxPods: 58    # m5.xlarge supports up to 58 pods
 
   limits:
-    cpu: 500           # Hard cap: max 500 vCPUs across all Karpenter nodes
+    cpu: 500
     memory: 2000Gi
 
   disruption:
     consolidationPolicy: WhenUnderutilized
-    consolidateAfter: 5m    # Remove nodes with no sessions after 5 min idle
+    consolidateAfter: 5m    # Bin-pack and remove underutilized nodes
 
 ---
 apiVersion: karpenter.k8s.aws/v1beta1
@@ -313,16 +320,45 @@ spec:
         encrypted: true
 ```
 
-### 5.3 NGINX Ingress Controller
+### 5.3 Namespace-Level Policies
+
+Apply these once to the `airflow-sessions` namespace — they apply to all pods within it:
+
+```yaml
+# cluster/namespace-policies.yaml
+
+# LimitRange — enforces default + max resource bounds on every pod
+# Prevents any single session from consuming unbounded resources
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: session-limits
+  namespace: airflow-sessions
+spec:
+  limits:
+    - type: Container
+      default:              # Applied if pod doesn't specify limits
+        cpu:    "500m"
+        memory: "1Gi"
+      defaultRequest:       # Applied if pod doesn't specify requests
+        cpu:    "250m"
+        memory: "512Mi"
+      max:                  # Hard ceiling per container
+        cpu:    "2"
+        memory: "4Gi"
+      min:                  # Minimum (prevents starvation)
+        cpu:    "50m"
+        memory: "64Mi"
+```
+
+### 5.4 NGINX Ingress Controller
 
 ```bash
-# Install NGINX Ingress Controller via Helm
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm repo update
 
 helm install ingress-nginx ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx \
-  --create-namespace \
+  --namespace system \
   --set controller.replicaCount=2 \
   --set controller.nodeSelector."role"=system \
   --set controller.tolerations[0].key=role \
@@ -330,78 +366,6 @@ helm install ingress-nginx ingress-nginx/ingress-nginx \
   --set controller.tolerations[0].effect=NoSchedule \
   --set controller.service.type=LoadBalancer \
   --set controller.service.annotations."service\.beta\.kubernetes\.io/aws-load-balancer-type"=nlb
-```
-
-### 5.4 Warm Pod Pool (Pre-warming for Fast Session Start)
-
-The warm pool maintains pre-initialized Airflow namespaces ready to be assigned to sessions. This eliminates image pull time:
-
-```python
-# warm_pool/pool_manager.py
-"""
-Maintains N pre-warmed Airflow namespaces ready for assignment.
-When a session is requested, a warm namespace is claimed instantly
-instead of waiting for cold pod startup.
-"""
-
-WARM_POOL_SIZE = 10    # Keep 10 sessions always ready
-WARM_POOL_LABEL = "airflow-test/pool-status"
-
-import kubernetes
-from kubernetes import client, config
-
-config.load_incluster_config()   # Runs inside the cluster
-k8s_core   = client.CoreV1Api()
-k8s_apps   = client.AppsV1Api()
-k8s_net    = client.NetworkingV1Api()
-
-def get_available_warm_namespace() -> str | None:
-    """Return a pre-warmed namespace ready for assignment."""
-    namespaces = k8s_core.list_namespace(
-        label_selector=f"{WARM_POOL_LABEL}=ready"
-    )
-    if namespaces.items:
-        return namespaces.items[0].metadata.name
-    return None
-
-def claim_warm_namespace(namespace: str, session_id: str, customer_id: str):
-    """Claim a warm namespace for a session — mark it as assigned."""
-    k8s_core.patch_namespace(
-        namespace,
-        body={
-            "metadata": {
-                "labels": {
-                    WARM_POOL_LABEL:            "assigned",
-                    "airflow-test/session-id":  session_id,
-                    "airflow-test/customer-id": customer_id,
-                }
-            }
-        }
-    )
-    # Replenish the pool asynchronously
-    replenish_warm_pool()
-
-def replenish_warm_pool():
-    """Ensure the warm pool is always at WARM_POOL_SIZE."""
-    ready = k8s_core.list_namespace(
-        label_selector=f"{WARM_POOL_LABEL}=ready"
-    ).items
-    deficit = WARM_POOL_SIZE - len(ready)
-    for _ in range(deficit):
-        create_warm_namespace()
-
-def create_warm_namespace():
-    """Create and pre-warm a new Airflow namespace for the pool."""
-    import uuid
-    ns_name = f"session-warm-{uuid.uuid4().hex[:8]}"
-    deploy_airflow_to_namespace(
-        namespace=ns_name,
-        session_id="warm-pool",
-        customer_id="warm-pool",
-        labels={WARM_POOL_LABEL: "initializing"},
-    )
-    # Mark as ready once Airflow webserver is healthy
-    # (checked by a background reconciliation loop)
 ```
 
 ---
@@ -415,14 +379,13 @@ def create_warm_namespace():
 FROM apache/airflow:2.9.2
 
 USER root
-
 RUN apt-get update && apt-get install -y \
     curl netcat-openbsd \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 USER airflow
 
-# Pre-install common providers
+# Pre-install providers — avoids pulling at session start
 RUN pip install --no-cache-dir \
     apache-airflow-providers-amazon \
     apache-airflow-providers-postgres \
@@ -431,21 +394,16 @@ RUN pip install --no-cache-dir \
     apache-airflow-providers-google \
     pandas requests
 
-# Copy sample DAGs
 COPY --chown=airflow:root sample_dags/ /opt/airflow/dags/
 
-# Healthcheck script
-COPY --chown=airflow:root scripts/healthcheck.sh /healthcheck.sh
-RUN chmod +x /healthcheck.sh
-
-# Optimized config for test sessions
+# Test-session optimized config
 ENV AIRFLOW__CORE__EXECUTOR=LocalExecutor \
     AIRFLOW__CORE__LOAD_EXAMPLES=False \
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=True \
     AIRFLOW__SCHEDULER__USE_JOB_SCHEDULE=False \
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG=True \
-    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL=10 \
-    AIRFLOW__WEBSERVER__ENABLE_PROXY_FIX=True
+    AIRFLOW__WEBSERVER__ENABLE_PROXY_FIX=True \
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL=10
 ```
 
 ```bash
@@ -463,107 +421,114 @@ docker push ${ECR_URI}:2.9.2
 
 ---
 
-## 7. Kubernetes Resource Manifests
+## 7. Labeling & Naming Convention
 
-All resources for a session are created inside a dedicated namespace. The Session Manager applies these manifests dynamically via the Kubernetes Python client.
+### 7.1 Standard Labels
 
-### 7.1 Namespace
+Every resource created for a session carries these labels:
 
 ```yaml
-# manifests/namespace.yaml
+labels:
+  app.kubernetes.io/session-id:  "{SESSION_ID}"     # Primary selector
+  app.kubernetes.io/customer-id: "{CUSTOMER_ID}"    # For customer-level queries
+  app.kubernetes.io/component:   "{webserver|scheduler|postgres}"
+  app.kubernetes.io/managed-by:  "session-manager"
+  app.kubernetes.io/version:     "2.9.2"
+```
+
+### 7.2 Resource Naming Pattern
+
+Since all sessions share one namespace, resource names must be unique per session:
+
+```
+Resource Type      Naming Pattern                  Example
+─────────────────────────────────────────────────────────────────
+Deployment         webserver-{session-id}          webserver-a1b2c3d4
+Deployment         scheduler-{session-id}          scheduler-a1b2c3d4
+StatefulSet        postgres-{session-id}           postgres-a1b2c3d4
+Service (postgres) postgres-{session-id}           postgres-a1b2c3d4
+Service (webserver)webserver-svc-{session-id}      webserver-svc-a1b2c3d4
+Secret             airflow-secrets-{session-id}    airflow-secrets-a1b2c3d4
+PVC                postgres-pvc-{session-id}       postgres-pvc-a1b2c3d4
+Job                airflow-init-{session-id}       airflow-init-a1b2c3d4
+Ingress            ingress-{session-id}            ingress-a1b2c3d4
+NetworkPolicy      netpol-{session-id}             netpol-a1b2c3d4
+```
+
+> **Note:** Session IDs are UUIDs — truncate to 8 characters for resource names to keep them readable while staying under the 63-character Kubernetes name limit.
+
+### 7.3 Internal DNS Between Containers
+
+In a single namespace, each session's postgres service is reachable by name:
+
+```
+postgres-{session-id}.airflow-sessions.svc.cluster.local
+
+# Connection string uses service name:
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN:
+  postgresql+psycopg2://airflow:pass@postgres-{session-id}/airflow
+```
+
+Because all pods are in the same namespace, the short form also works:
+```
+postgresql+psycopg2://airflow:pass@postgres-a1b2c3d4/airflow
+```
+
+---
+
+## 8. Kubernetes Resource Manifests
+
+All manifests are templates with `{SESSION_ID}`, `{CUSTOMER_ID}`, and credential placeholders replaced at session creation time.
+
+### 8.1 Secret (Per-Session Credentials)
+
+```yaml
+# manifests/secret.yaml
 apiVersion: v1
-kind: Namespace
+kind: Secret
 metadata:
-  name: session-{SESSION_ID}
+  name: airflow-secrets-{SESSION_ID}
+  namespace: airflow-sessions
   labels:
-    airflow-test/session-id:  "{SESSION_ID}"
-    airflow-test/customer-id: "{CUSTOMER_ID}"
-    airflow-test/pool-status: "assigned"
-    airflow-test/created-at:  "{CREATED_AT}"
+    app.kubernetes.io/session-id:  "{SESSION_ID}"
+    app.kubernetes.io/customer-id: "{CUSTOMER_ID}"
+    app.kubernetes.io/managed-by:  "session-manager"
+type: Opaque
+stringData:
+  db-password:          "{DB_PASSWORD}"
+  db-conn-string:       "postgresql+psycopg2://airflow:{DB_PASSWORD}@postgres-{SESSION_ID}/airflow"
+  fernet-key:           "{FERNET_KEY}"
+  webserver-secret-key: "{WEBSERVER_SECRET_KEY}"
+  admin-password:       "{ADMIN_PASSWORD}"
 ```
 
-### 7.2 ResourceQuota (Per-Session Resource Cap)
-
-```yaml
-# manifests/resource-quota.yaml
-apiVersion: v1
-kind: ResourceQuota
-metadata:
-  name: session-quota
-  namespace: session-{SESSION_ID}
-spec:
-  hard:
-    requests.cpu:    "1500m"
-    requests.memory: "3Gi"
-    limits.cpu:      "2"
-    limits.memory:   "4Gi"
-    pods:            "10"
-```
-
-### 7.3 NetworkPolicy (Block Cross-Session Traffic)
-
-```yaml
-# manifests/network-policy.yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: deny-cross-session
-  namespace: session-{SESSION_ID}
-spec:
-  podSelector: {}    # Applies to ALL pods in this namespace
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
-    # Only allow traffic from within the same namespace
-    - from:
-        - podSelector: {}
-    # Allow traffic from NGINX Ingress Controller
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
-  egress:
-    # Allow traffic within namespace (scheduler → postgres, webserver → postgres)
-    - to:
-        - podSelector: {}
-    # Allow DNS resolution
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports:
-        - port: 53
-          protocol: UDP
-    # Allow outbound internet for DAG dependencies
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-            except:
-              - 10.0.0.0/8      # Block access to internal VPC
-              - 172.16.0.0/12
-              - 192.168.0.0/16
-```
-
-### 7.4 PostgreSQL StatefulSet
+### 8.2 PostgreSQL StatefulSet
 
 ```yaml
 # manifests/postgres.yaml
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: postgres
-  namespace: session-{SESSION_ID}
+  name: postgres-{SESSION_ID}
+  namespace: airflow-sessions
+  labels:
+    app.kubernetes.io/session-id:  "{SESSION_ID}"
+    app.kubernetes.io/customer-id: "{CUSTOMER_ID}"
+    app.kubernetes.io/component:   "postgres"
+    app.kubernetes.io/managed-by:  "session-manager"
 spec:
-  serviceName: postgres
+  serviceName: postgres-{SESSION_ID}
   replicas: 1
   selector:
     matchLabels:
-      app: postgres
+      app.kubernetes.io/session-id: "{SESSION_ID}"
+      app.kubernetes.io/component:  "postgres"
   template:
     metadata:
       labels:
-        app: postgres
+        app.kubernetes.io/session-id:  "{SESSION_ID}"
+        app.kubernetes.io/customer-id: "{CUSTOMER_ID}"
+        app.kubernetes.io/component:   "postgres"
     spec:
       nodeSelector:
         role: session
@@ -576,7 +541,7 @@ spec:
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: airflow-secrets
+                  name: airflow-secrets-{SESSION_ID}
                   key: db-password
             - name: POSTGRES_DB
               value: airflow
@@ -594,13 +559,15 @@ spec:
               command: ["pg_isready", "-U", "airflow"]
             initialDelaySeconds: 10
             periodSeconds: 10
-          # Ephemeral storage — data gone when pod is deleted
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
   volumeClaimTemplates:
     - metadata:
         name: postgres-data
+        labels:
+          app.kubernetes.io/session-id: "{SESSION_ID}"
+          app.kubernetes.io/managed-by: "session-manager"
       spec:
         accessModes: ["ReadWriteOnce"]
         storageClassName: gp3
@@ -609,50 +576,63 @@ spec:
             storage: 5Gi
 
 ---
+# Headless service — allows DNS resolution: postgres-{session-id}.airflow-sessions
 apiVersion: v1
 kind: Service
 metadata:
-  name: postgres
-  namespace: session-{SESSION_ID}
+  name: postgres-{SESSION_ID}
+  namespace: airflow-sessions
+  labels:
+    app.kubernetes.io/session-id:  "{SESSION_ID}"
+    app.kubernetes.io/component:   "postgres"
+    app.kubernetes.io/managed-by:  "session-manager"
 spec:
+  clusterIP: None    # Headless — DNS resolves directly to pod IP
   selector:
-    app: postgres
+    app.kubernetes.io/session-id: "{SESSION_ID}"
+    app.kubernetes.io/component:  "postgres"
   ports:
     - port: 5432
       targetPort: 5432
-  clusterIP: None    # Headless service for StatefulSet DNS
 ```
 
-### 7.5 Airflow Init Job
+### 8.3 Airflow Init Job
 
 ```yaml
 # manifests/airflow-init.yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: airflow-init
-  namespace: session-{SESSION_ID}
+  name: airflow-init-{SESSION_ID}
+  namespace: airflow-sessions
+  labels:
+    app.kubernetes.io/session-id:  "{SESSION_ID}"
+    app.kubernetes.io/customer-id: "{CUSTOMER_ID}"
+    app.kubernetes.io/component:   "init"
+    app.kubernetes.io/managed-by:  "session-manager"
 spec:
-  ttlSecondsAfterFinished: 300    # Auto-delete job after 5 min
+  ttlSecondsAfterFinished: 120    # Auto-delete job object 2 min after completion
   backoffLimit: 3
   template:
+    metadata:
+      labels:
+        app.kubernetes.io/session-id: "{SESSION_ID}"
+        app.kubernetes.io/component:  "init"
     spec:
       restartPolicy: OnFailure
       nodeSelector:
         role: session
       initContainers:
-        # Wait for postgres to be ready before init
         - name: wait-for-postgres
           image: busybox:1.36
           command:
             - sh
             - -c
             - |
-              until nc -z postgres 5432; do
-                echo "Waiting for postgres..."; sleep 2;
+              until nc -z postgres-{SESSION_ID} 5432; do
+                echo "Waiting for postgres-{SESSION_ID}..."; sleep 2;
               done
               echo "Postgres is ready"
-
       containers:
         - name: airflow-init
           image: {ECR_IMAGE}
@@ -663,21 +643,22 @@ spec:
               airflow db migrate
               airflow users create \
                 --username admin \
-                --password $(AIRFLOW_ADMIN_PASSWORD) \
+                --password $(ADMIN_PASSWORD) \
                 --firstname Test \
                 --lastname User \
                 --role Admin \
                 --email admin@test.com
+              echo "Init complete"
           env:
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               valueFrom:
                 secretKeyRef:
-                  name: airflow-secrets
+                  name: airflow-secrets-{SESSION_ID}
                   key: db-conn-string
-            - name: AIRFLOW_ADMIN_PASSWORD
+            - name: ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: airflow-secrets
+                  name: airflow-secrets-{SESSION_ID}
                   key: admin-password
           resources:
             requests:
@@ -688,28 +669,36 @@ spec:
               memory: "1Gi"
 ```
 
-### 7.6 Airflow Webserver Deployment
+### 8.4 Airflow Webserver Deployment
 
 ```yaml
 # manifests/airflow-webserver.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: airflow-webserver
-  namespace: session-{SESSION_ID}
+  name: webserver-{SESSION_ID}
+  namespace: airflow-sessions
+  labels:
+    app.kubernetes.io/session-id:  "{SESSION_ID}"
+    app.kubernetes.io/customer-id: "{CUSTOMER_ID}"
+    app.kubernetes.io/component:   "webserver"
+    app.kubernetes.io/managed-by:  "session-manager"
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: airflow-webserver
+      app.kubernetes.io/session-id: "{SESSION_ID}"
+      app.kubernetes.io/component:  "webserver"
   template:
     metadata:
       labels:
-        app: airflow-webserver
+        app.kubernetes.io/session-id:  "{SESSION_ID}"
+        app.kubernetes.io/customer-id: "{CUSTOMER_ID}"
+        app.kubernetes.io/component:   "webserver"
     spec:
       nodeSelector:
         role: session
-      # Wait for init job to complete
+      # Wait for init job to finish before starting webserver
       initContainers:
         - name: wait-for-init
           image: bitnami/kubectl:latest
@@ -717,16 +706,10 @@ spec:
             - sh
             - -c
             - |
-              kubectl wait --for=condition=complete \
-                job/airflow-init \
+              kubectl wait job/airflow-init-{SESSION_ID} \
+                --for=condition=complete \
                 --timeout=120s \
-                -n $(POD_NAMESPACE)
-          env:
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-
+                -n airflow-sessions
       containers:
         - name: airflow-webserver
           image: {ECR_IMAGE}
@@ -737,17 +720,17 @@ spec:
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               valueFrom:
                 secretKeyRef:
-                  name: airflow-secrets
+                  name: airflow-secrets-{SESSION_ID}
                   key: db-conn-string
             - name: AIRFLOW__CORE__FERNET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: airflow-secrets
+                  name: airflow-secrets-{SESSION_ID}
                   key: fernet-key
             - name: AIRFLOW__WEBSERVER__SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: airflow-secrets
+                  name: airflow-secrets-{SESSION_ID}
                   key: webserver-secret-key
             - name: AIRFLOW__WEBSERVER__BASE_URL
               value: "https://test.yourdomain.com/session/{SESSION_ID}"
@@ -776,34 +759,47 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: airflow-webserver
-  namespace: session-{SESSION_ID}
+  name: webserver-svc-{SESSION_ID}
+  namespace: airflow-sessions
+  labels:
+    app.kubernetes.io/session-id:  "{SESSION_ID}"
+    app.kubernetes.io/component:   "webserver"
+    app.kubernetes.io/managed-by:  "session-manager"
 spec:
   selector:
-    app: airflow-webserver
+    app.kubernetes.io/session-id: "{SESSION_ID}"
+    app.kubernetes.io/component:  "webserver"
   ports:
     - port: 8080
       targetPort: 8080
 ```
 
-### 7.7 Airflow Scheduler Deployment
+### 8.5 Airflow Scheduler Deployment
 
 ```yaml
 # manifests/airflow-scheduler.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: airflow-scheduler
-  namespace: session-{SESSION_ID}
+  name: scheduler-{SESSION_ID}
+  namespace: airflow-sessions
+  labels:
+    app.kubernetes.io/session-id:  "{SESSION_ID}"
+    app.kubernetes.io/customer-id: "{CUSTOMER_ID}"
+    app.kubernetes.io/component:   "scheduler"
+    app.kubernetes.io/managed-by:  "session-manager"
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: airflow-scheduler
+      app.kubernetes.io/session-id: "{SESSION_ID}"
+      app.kubernetes.io/component:  "scheduler"
   template:
     metadata:
       labels:
-        app: airflow-scheduler
+        app.kubernetes.io/session-id:  "{SESSION_ID}"
+        app.kubernetes.io/customer-id: "{CUSTOMER_ID}"
+        app.kubernetes.io/component:   "scheduler"
     spec:
       nodeSelector:
         role: session
@@ -815,12 +811,12 @@ spec:
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               valueFrom:
                 secretKeyRef:
-                  name: airflow-secrets
+                  name: airflow-secrets-{SESSION_ID}
                   key: db-conn-string
             - name: AIRFLOW__CORE__FERNET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: airflow-secrets
+                  name: airflow-secrets-{SESSION_ID}
                   key: fernet-key
           resources:
             requests:
@@ -834,29 +830,85 @@ spec:
               command:
                 - sh
                 - -c
-                - |
-                  airflow jobs check \
-                    --job-type SchedulerJob \
-                    --hostname $(hostname)
+                - airflow jobs check --job-type SchedulerJob --hostname $(hostname)
             initialDelaySeconds: 30
             periodSeconds: 30
 ```
 
-### 7.8 Ingress Rule (Per-Session)
+### 8.6 NetworkPolicy (Pod-Level Isolation)
+
+```yaml
+# manifests/network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: netpol-{SESSION_ID}
+  namespace: airflow-sessions
+  labels:
+    app.kubernetes.io/session-id:  "{SESSION_ID}"
+    app.kubernetes.io/managed-by:  "session-manager"
+spec:
+  # Apply ONLY to pods belonging to this session
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/session-id: "{SESSION_ID}"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow traffic only from pods with the SAME session-id label
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/session-id: "{SESSION_ID}"
+    # Allow traffic from NGINX Ingress pods (in system namespace)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+  egress:
+    # Allow traffic to pods with the same session-id (webserver → postgres, etc.)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/session-id: "{SESSION_ID}"
+    # Allow DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+    # Allow outbound internet for DAG dependencies
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+```
+
+### 8.7 Ingress Rule (Per-Session)
 
 ```yaml
 # manifests/ingress.yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: airflow-ingress
-  namespace: session-{SESSION_ID}
+  name: ingress-{SESSION_ID}
+  namespace: airflow-sessions
+  labels:
+    app.kubernetes.io/session-id:  "{SESSION_ID}"
+    app.kubernetes.io/managed-by:  "session-manager"
   annotations:
     nginx.ingress.kubernetes.io/rewrite-target: /$2
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
-    nginx.ingress.kubernetes.io/proxy-read-timeout:    "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout:    "3600"
-    # Strip session prefix before forwarding to Airflow
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
     nginx.ingress.kubernetes.io/configuration-snippet: |
       proxy_set_header X-Forwarded-Prefix /session/{SESSION_ID};
 spec:
@@ -869,52 +921,47 @@ spec:
             pathType: ImplementationSpecific
             backend:
               service:
-                name: airflow-webserver
+                name: webserver-svc-{SESSION_ID}
                 port:
                   number: 8080
 ```
 
-### 7.9 Per-Session Secrets
-
-```yaml
-# manifests/secrets.yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: airflow-secrets
-  namespace: session-{SESSION_ID}
-type: Opaque
-stringData:
-  db-password:          "{DB_PASSWORD}"
-  db-conn-string:       "postgresql+psycopg2://airflow:{DB_PASSWORD}@postgres/airflow"
-  fernet-key:           "{FERNET_KEY}"
-  webserver-secret-key: "{WEBSERVER_SECRET_KEY}"
-  admin-password:       "{ADMIN_PASSWORD}"
-```
-
 ---
 
-## 8. Session Lifecycle Management
+## 9. Session Lifecycle Management
 
-### 8.1 Session States
+### 9.1 Session States
 
 ```
 REQUESTED → LAUNCHING → READY → ACTIVE → TERMINATING → TERMINATED
-                ↑                   ↑
-         Warm pool hit          TTL reset on
-         (skip to READY)        customer activity
 ```
 
-| State | Duration | Description |
+| State | Duration | What's Happening |
 |---|---|---|
-| `REQUESTED` | Seconds | API received request, namespace creation initiated |
-| `LAUNCHING` | 10–30 sec (cold) / 5 sec (warm) | Pods starting, init job running |
-| `READY` | — | Airflow UI accessible, URL delivered to customer |
-| `ACTIVE` | Up to TTL | Customer is actively using the environment |
-| `TERMINATING` | Seconds | Namespace deletion in progress |
-| `TERMINATED` | — | All Kubernetes resources deleted, warm pool replenished |
+| `REQUESTED` | Seconds | API received request, about to create K8s resources |
+| `LAUNCHING` | 20–30 sec | Pods being scheduled, init job running |
+| `READY` | — | Webserver healthy, URL returned to customer |
+| `ACTIVE` | Up to TTL | Customer using Airflow |
+| `TERMINATING` | 10–30 sec | Label-selector delete in progress |
+| `TERMINATED` | — | All pods gone, PVC deleted, DynamoDB updated |
 
-### 8.2 DynamoDB Session Store
+### 9.2 Resource Creation Order
+
+The order resources are applied matters — postgres must be healthy before init runs, init must complete before webserver starts:
+
+```
+1. Secret                    (credentials available immediately)
+2. StatefulSet: postgres     (start DB)
+3. Service: postgres         (DNS available)
+4. Job: airflow-init         (waits for postgres via initContainer)
+5. Deployment: webserver     (waits for init job via initContainer)
+6. Deployment: scheduler     (waits for init job via initContainer)
+7. Service: webserver-svc    (expose webserver)
+8. NetworkPolicy             (isolate session pods)
+9. Ingress                   (route external traffic)
+```
+
+### 9.3 DynamoDB Session Store
 
 ```python
 # session_store.py
@@ -931,32 +978,30 @@ class SessionStore:
 
     def create_session(
         self,
-        session_id:   str,
-        customer_id:  str,
-        namespace:    str,
-        ttl_minutes:  int,
+        session_id:  str,
+        customer_id: str,
+        ttl_minutes: int,
     ) -> dict:
-        now        = datetime.now(timezone.utc)
-        ttl_epoch  = int(now.timestamp()) + (ttl_minutes * 60)
+        now       = datetime.now(timezone.utc)
+        ttl_epoch = int(now.timestamp()) + (ttl_minutes * 60)
 
         item = {
             "session_id":   session_id,
             "customer_id":  customer_id,
-            "namespace":    namespace,
+            "namespace":    "airflow-sessions",   # Always the same namespace
             "status":       "REQUESTED",
             "created_at":   now.isoformat(),
             "ttl":          ttl_epoch,
             "ttl_minutes":  ttl_minutes,
             "airflow_url":  None,
-            "warm_pool":    False,
         }
         self.table.put_item(Item=item)
         return item
 
     def update_session(self, session_id: str, updates: dict):
-        update_expr  = "SET " + ", ".join(f"#{k} = :{k}" for k in updates)
-        expr_names   = {f"#{k}": k for k in updates}
-        expr_values  = {f":{k}": v for k, v in updates.items()}
+        update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in updates)
+        expr_names  = {f"#{k}": k for k in updates}
+        expr_values = {f":{k}": v for k, v in updates.items()}
         self.table.update_item(
             Key={"session_id": session_id},
             UpdateExpression=update_expr,
@@ -984,7 +1029,7 @@ class SessionStore:
         return response.get("Items", [])
 ```
 
-### 8.3 TTL Cleanup — Lambda + EventBridge
+### 9.4 TTL Cleanup — Lambda + EventBridge
 
 ```python
 # lambda/ttl_cleanup/handler.py
@@ -993,14 +1038,82 @@ from kubernetes import client, config
 from datetime import datetime, timezone
 
 config.load_incluster_config()
-k8s_core  = client.CoreV1Api()
-dynamodb  = boto3.resource("dynamodb", region_name="us-east-1")
-TABLE     = dynamodb.Table("airflow-test-sessions")
+k8s_apps   = client.AppsV1Api()
+k8s_core   = client.CoreV1Api()
+k8s_batch  = client.BatchV1Api()
+k8s_net    = client.NetworkingV1Api()
+dynamodb   = boto3.resource("dynamodb", region_name="us-east-1")
+TABLE      = dynamodb.Table("airflow-test-sessions")
+NAMESPACE  = "airflow-sessions"
+
+def delete_session_resources(session_id: str):
+    """
+    Delete all Kubernetes resources for a session using label selector.
+    Single label selector cleans up everything — no namespace delete needed.
+    """
+    selector = f"app.kubernetes.io/session-id={session_id}"
+
+    # Delete in order to avoid dangling dependencies
+    try:
+        k8s_net.delete_collection_namespaced_network_policy(
+            NAMESPACE, label_selector=selector)
+    except Exception as e:
+        print(f"NetworkPolicy delete: {e}")
+
+    try:
+        k8s_net.delete_collection_namespaced_ingress(
+            NAMESPACE, label_selector=selector)
+    except Exception as e:
+        print(f"Ingress delete: {e}")
+
+    try:
+        k8s_apps.delete_collection_namespaced_deployment(
+            NAMESPACE, label_selector=selector)
+    except Exception as e:
+        print(f"Deployment delete: {e}")
+
+    try:
+        k8s_batch.delete_collection_namespaced_job(
+            NAMESPACE, label_selector=selector,
+            body=client.V1DeleteOptions(propagation_policy="Background"))
+    except Exception as e:
+        print(f"Job delete: {e}")
+
+    try:
+        k8s_apps.delete_collection_namespaced_stateful_set(
+            NAMESPACE, label_selector=selector)
+    except Exception as e:
+        print(f"StatefulSet delete: {e}")
+
+    try:
+        k8s_core.delete_collection_namespaced_service(
+            NAMESPACE, label_selector=selector)
+    except Exception as e:
+        print(f"Service delete: {e}")
+
+    try:
+        k8s_core.delete_collection_namespaced_secret(
+            NAMESPACE, label_selector=selector)
+    except Exception as e:
+        print(f"Secret delete: {e}")
+
+    try:
+        # PVCs must be deleted explicitly — not cascade-deleted with StatefulSet
+        k8s_core.delete_collection_namespaced_persistent_volume_claim(
+            NAMESPACE, label_selector=selector)
+    except Exception as e:
+        print(f"PVC delete: {e}")
+
+    print(f"Session {session_id} resources deleted")
+
 
 def handler(event, context):
+    """
+    Triggered by EventBridge every 5 minutes.
+    Finds sessions past TTL and cleans up their K8s resources.
+    """
     now_epoch = int(datetime.now(timezone.utc).timestamp())
 
-    # Find sessions past TTL
     response = TABLE.scan(
         FilterExpression=(
             "#status IN (:s1, :s2) AND #ttl < :now"
@@ -1019,27 +1132,9 @@ def handler(event, context):
     terminated = []
     for session in response.get("Items", []):
         session_id = session["session_id"]
-        namespace  = session.get("namespace")
+        print(f"Terminating expired session: {session_id}")
 
-        print(f"Terminating expired session: {session_id} / namespace: {namespace}")
-
-        # Delete the entire Kubernetes namespace
-        # This cascades to all resources: Pods, Services, Ingress, Secrets, PVCs
-        if namespace:
-            try:
-                k8s_core.delete_namespace(
-                    name=namespace,
-                    body=client.V1DeleteOptions(
-                        propagation_policy="Foreground",
-                        grace_period_seconds=30,
-                    )
-                )
-                print(f"Namespace {namespace} deletion initiated")
-            except client.exceptions.ApiException as e:
-                if e.status == 404:
-                    print(f"Namespace {namespace} already gone")
-                else:
-                    print(f"Error deleting namespace: {e}")
+        delete_session_resources(session_id)
 
         TABLE.update_item(
             Key={"session_id": session_id},
@@ -1055,31 +1150,37 @@ def handler(event, context):
 
 ---
 
-## 9. API Layer
+## 10. API Layer
 
-### 9.1 Kubernetes Session Launcher
+### 10.1 Kubernetes Session Launcher
 
 ```python
 # k8s_launcher.py
 import uuid
 import yaml
+import secrets as secrets_lib
 from pathlib import Path
 from kubernetes import client, config
 from cryptography.fernet import Fernet
-import secrets as secrets_lib
 
 config.load_incluster_config()
-k8s_core   = client.CoreV1Api()
 k8s_apps   = client.AppsV1Api()
+k8s_core   = client.CoreV1Api()
 k8s_batch  = client.BatchV1Api()
 k8s_net    = client.NetworkingV1Api()
 
+NAMESPACE     = "airflow-sessions"
 ECR_IMAGE     = "123456789012.dkr.ecr.us-east-1.amazonaws.com/airflow-test:2.9.2"
-MANIFESTS_DIR = Path("/app/manifests")
 BASE_DOMAIN   = "test.yourdomain.com"
+MANIFESTS_DIR = Path("/app/manifests")
 
 
-def generate_session_secrets() -> dict:
+def generate_session_id() -> str:
+    """Short session ID — safe for K8s resource names (8 hex chars)."""
+    return uuid.uuid4().hex[:8]
+
+
+def generate_credentials() -> dict:
     return {
         "db-password":          secrets_lib.token_urlsafe(24),
         "fernet-key":           Fernet.generate_key().decode(),
@@ -1088,23 +1189,26 @@ def generate_session_secrets() -> dict:
     }
 
 
-def render_manifest(template_path: str, replacements: dict) -> dict:
-    """Load a YAML manifest template and replace placeholders."""
-    content = (MANIFESTS_DIR / template_path).read_text()
+def render(template_name: str, replacements: dict) -> dict:
+    """Load manifest template and substitute placeholders."""
+    content = (MANIFESTS_DIR / template_name).read_text()
     for key, value in replacements.items():
         content = content.replace(f"{{{key}}}", str(value))
     return yaml.safe_load(content)
 
 
-def launch_session(session_id: str, customer_id: str) -> dict:
-    """
-    Create a Kubernetes namespace and deploy Airflow into it.
-    Returns airflow_url and namespace name.
-    """
-    namespace = f"session-{session_id[:16]}"
-    creds     = generate_session_secrets()
+def render_all(template_name: str, replacements: dict) -> list:
+    """Load multi-document YAML manifest (separated by ---)."""
+    content = (MANIFESTS_DIR / template_name).read_text()
+    for key, value in replacements.items():
+        content = content.replace(f"{{{key}}}", str(value))
+    return [doc for doc in yaml.safe_load_all(content) if doc]
 
-    replacements = {
+
+def launch_session(session_id: str, customer_id: str) -> dict:
+    creds = generate_credentials()
+
+    r = {
         "SESSION_ID":          session_id,
         "CUSTOMER_ID":         customer_id,
         "ECR_IMAGE":           ECR_IMAGE,
@@ -1114,53 +1218,39 @@ def launch_session(session_id: str, customer_id: str) -> dict:
         "ADMIN_PASSWORD":      creds["admin-password"],
     }
 
-    # 1. Create namespace
-    ns_manifest = render_manifest("namespace.yaml", replacements)
-    k8s_core.create_namespace(body=ns_manifest)
+    # 1. Secret
+    k8s_core.create_namespaced_secret(NAMESPACE, body=render("secret.yaml", r))
 
-    # 2. Apply resource quota
-    quota = render_manifest("resource-quota.yaml", replacements)
-    k8s_core.create_namespaced_resource_quota(namespace, body=quota)
+    # 2. Postgres StatefulSet + Service
+    for doc in render_all("postgres.yaml", r):
+        if doc["kind"] == "StatefulSet":
+            k8s_apps.create_namespaced_stateful_set(NAMESPACE, body=doc)
+        elif doc["kind"] == "Service":
+            k8s_core.create_namespaced_service(NAMESPACE, body=doc)
 
-    # 3. Apply network policy
-    netpol = render_manifest("network-policy.yaml", replacements)
-    k8s_net.create_namespaced_network_policy(namespace, body=netpol)
+    # 3. Init Job
+    k8s_batch.create_namespaced_job(NAMESPACE, body=render("airflow-init.yaml", r))
 
-    # 4. Create secrets
-    secret = render_manifest("secrets.yaml", replacements)
-    k8s_core.create_namespaced_secret(namespace, body=secret)
+    # 4. Webserver Deployment + Service
+    for doc in render_all("airflow-webserver.yaml", r):
+        if doc["kind"] == "Deployment":
+            k8s_apps.create_namespaced_deployment(NAMESPACE, body=doc)
+        elif doc["kind"] == "Service":
+            k8s_core.create_namespaced_service(NAMESPACE, body=doc)
 
-    # 5. Deploy PostgreSQL
-    pg_sts = render_manifest("postgres.yaml", replacements)
-    k8s_apps.create_namespaced_stateful_set(namespace, body=pg_sts)
-    pg_svc = yaml.safe_load_all((MANIFESTS_DIR / "postgres.yaml").read_text())
-    for doc in pg_svc:
-        if doc and doc.get("kind") == "Service":
-            k8s_core.create_namespaced_service(namespace, body=doc)
+    # 5. Scheduler Deployment
+    k8s_apps.create_namespaced_deployment(
+        NAMESPACE, body=render("airflow-scheduler.yaml", r))
 
-    # 6. Run airflow init job
-    init_job = render_manifest("airflow-init.yaml", replacements)
-    k8s_batch.create_namespaced_job(namespace, body=init_job)
+    # 6. NetworkPolicy
+    k8s_net.create_namespaced_network_policy(
+        NAMESPACE, body=render("network-policy.yaml", r))
 
-    # 7. Deploy webserver + scheduler
-    ws_deploy = render_manifest("airflow-webserver.yaml", replacements)
-    k8s_apps.create_namespaced_deployment(namespace, body=ws_deploy)
-    ws_svc = yaml.safe_load_all((MANIFESTS_DIR / "airflow-webserver.yaml").read_text())
-    for doc in ws_svc:
-        if doc and doc.get("kind") == "Service":
-            k8s_core.create_namespaced_service(namespace, body=doc)
+    # 7. Ingress
+    k8s_net.create_namespaced_ingress(NAMESPACE, body=render("ingress.yaml", r))
 
-    sched_deploy = render_manifest("airflow-scheduler.yaml", replacements)
-    k8s_apps.create_namespaced_deployment(namespace, body=sched_deploy)
-
-    # 8. Create ingress rule
-    ingress = render_manifest("ingress.yaml", replacements)
-    k8s_net.create_namespaced_ingress(namespace, body=ingress)
-
-    airflow_url = f"https://{BASE_DOMAIN}/session/{session_id}"
     return {
-        "namespace":   namespace,
-        "airflow_url": airflow_url,
+        "airflow_url": f"https://{BASE_DOMAIN}/session/{session_id}",
         "credentials": {
             "username": "admin",
             "password": creds["admin-password"],
@@ -1168,34 +1258,38 @@ def launch_session(session_id: str, customer_id: str) -> dict:
     }
 
 
-def terminate_session(namespace: str):
-    """Delete the entire Kubernetes namespace — cascades to all resources."""
-    try:
-        k8s_core.delete_namespace(
-            name=namespace,
-            body=client.V1DeleteOptions(
-                propagation_policy="Foreground",
-                grace_period_seconds=30,
-            )
-        )
-    except client.exceptions.ApiException as e:
-        if e.status != 404:
-            raise
+def terminate_session(session_id: str):
+    """Delete all resources for this session via label selector."""
+    selector = f"app.kubernetes.io/session-id={session_id}"
+
+    for fn, name in [
+        (k8s_net.delete_collection_namespaced_network_policy,   "NetworkPolicy"),
+        (k8s_net.delete_collection_namespaced_ingress,          "Ingress"),
+        (k8s_apps.delete_collection_namespaced_deployment,      "Deployment"),
+        (k8s_batch.delete_collection_namespaced_job,            "Job"),
+        (k8s_apps.delete_collection_namespaced_stateful_set,    "StatefulSet"),
+        (k8s_core.delete_collection_namespaced_service,         "Service"),
+        (k8s_core.delete_collection_namespaced_secret,          "Secret"),
+        (k8s_core.delete_collection_namespaced_persistent_volume_claim, "PVC"),
+    ]:
+        try:
+            fn(NAMESPACE, label_selector=selector)
+            print(f"Deleted {name} for session {session_id}")
+        except Exception as e:
+            print(f"Warning deleting {name}: {e}")
 ```
 
-### 9.2 FastAPI Session Manager
+### 10.2 FastAPI Session Manager
 
 ```python
 # main.py
-import uuid
 import asyncio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from k8s_launcher import launch_session, terminate_session
-from warm_pool.pool_manager import get_available_warm_namespace, claim_warm_namespace
+from k8s_launcher import launch_session, terminate_session, generate_session_id
 from session_store import SessionStore
 
-app   = FastAPI(title="Airflow Test Session Manager — Kubernetes")
+app   = FastAPI(title="Airflow Test Session Manager — Kubernetes Single Namespace")
 store = SessionStore()
 
 MAX_TTL_MINUTES     = 120
@@ -1211,7 +1305,7 @@ class StartSessionRequest(BaseModel):
 async def start_session(request: StartSessionRequest):
     ttl = min(request.ttl_minutes, MAX_TTL_MINUTES)
 
-    # Enforce one active session per customer
+    # One session per customer at a time
     active = store.list_active_sessions(request.customer_id)
     if active:
         raise HTTPException(status_code=409, detail={
@@ -1220,46 +1314,36 @@ async def start_session(request: StartSessionRequest):
             "airflow_url": active[0].get("airflow_url"),
         })
 
-    session_id = str(uuid.uuid4())
+    session_id = generate_session_id()
+    store.create_session(session_id, request.customer_id, ttl)
+    store.update_session(session_id, {"status": "LAUNCHING"})
 
-    # Try warm pool first (instant start)
-    warm_ns    = get_available_warm_namespace()
-    used_warm  = warm_ns is not None
+    try:
+        result = await asyncio.to_thread(
+            launch_session, session_id, request.customer_id
+        )
 
-    if used_warm:
-        claim_warm_namespace(warm_ns, session_id, request.customer_id)
-        namespace   = warm_ns
-        airflow_url = f"https://test.yourdomain.com/session/{session_id}"
-        credentials = {"username": "admin", "password": "admin"}
-    else:
-        # Cold start — create new namespace
-        store.create_session(session_id, request.customer_id, "pending", ttl)
-        store.update_session(session_id, {"status": "LAUNCHING"})
+        # Poll Airflow health until ready
+        await wait_for_airflow(result["airflow_url"], timeout=120)
 
-        result      = await asyncio.to_thread(launch_session, session_id, request.customer_id)
-        namespace   = result["namespace"]
-        airflow_url = result["airflow_url"]
-        credentials = result["credentials"]
+        store.update_session(session_id, {
+            "status":      "READY",
+            "airflow_url": result["airflow_url"],
+        })
 
-        # Poll until Airflow is healthy (cold: ~30 sec)
-        await wait_for_airflow(airflow_url, timeout=120)
+        return {
+            "session_id":   session_id,
+            "airflow_url":  result["airflow_url"],
+            "status":       "READY",
+            "ttl_minutes":  ttl,
+            "credentials":  result["credentials"],
+        }
 
-    store.create_session(session_id, request.customer_id, namespace, ttl)
-    store.update_session(session_id, {
-        "status":      "READY",
-        "airflow_url": airflow_url,
-        "namespace":   namespace,
-        "warm_pool":   used_warm,
-    })
-
-    return {
-        "session_id":   session_id,
-        "airflow_url":  airflow_url,
-        "status":       "READY",
-        "ttl_minutes":  ttl,
-        "credentials":  credentials,
-        "warm_pool_hit": used_warm,
-    }
+    except Exception as e:
+        store.update_session(session_id, {"status": "FAILED"})
+        # Attempt cleanup on failure
+        await asyncio.to_thread(terminate_session, session_id)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/sessions/{session_id}")
@@ -1272,7 +1356,7 @@ async def end_session(session_id: str):
         return {"message": "Already terminated", "session_id": session_id}
 
     store.update_session(session_id, {"status": "TERMINATING"})
-    await asyncio.to_thread(terminate_session, session["namespace"])
+    await asyncio.to_thread(terminate_session, session_id)
     store.update_session(session_id, {"status": "TERMINATED"})
 
     return {"message": "Session terminated", "session_id": session_id}
@@ -1315,11 +1399,11 @@ async def wait_for_airflow(url: str, timeout: int = 120):
 
 ---
 
-## 10. Networking & Ingress Routing
+## 11. Networking & Ingress Routing
 
-### 10.1 Path-Based Routing via NGINX Ingress
+### 11.1 Path-Based Routing
 
-Each session gets a unique path on a shared NGINX ingress:
+Every session is accessible at a unique path on a single shared domain:
 
 ```
 https://test.yourdomain.com/session/{session-id}/home
@@ -1328,20 +1412,25 @@ https://test.yourdomain.com/session/{session-id}/graph?dag_id=...
 ```
 
 NGINX rewrites the path before forwarding to Airflow:
-- Incoming: `/session/abc-123/dags`
-- Forwarded to Airflow: `/dags`
-- With header: `X-Forwarded-Prefix: /session/abc-123`
 
-### 10.2 TLS Termination via cert-manager
+```
+Incoming:  GET /session/a1b2c3d4/dags
+           ↓  NGINX strips prefix
+Forwarded: GET /dags  (to webserver-svc-a1b2c3d4:8080)
+           ↓  X-Forwarded-Prefix: /session/a1b2c3d4
+Airflow:   Reconstructs full URLs using BASE_URL config
+```
+
+### 11.2 TLS via cert-manager
 
 ```bash
-# Install cert-manager for automatic TLS certificates
+# Install cert-manager
 helm repo add jetstack https://charts.jetstack.io
 helm install cert-manager jetstack/cert-manager \
-  --namespace cert-manager --create-namespace \
+  --namespace system \
   --set installCRDs=true
 
-# Create ClusterIssuer for Let's Encrypt
+# ClusterIssuer — Let's Encrypt
 kubectl apply -f - <<EOF
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -1360,294 +1449,307 @@ spec:
 EOF
 ```
 
-Add to Ingress manifest:
-```yaml
-metadata:
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-spec:
-  tls:
-    - hosts:
-        - test.yourdomain.com
-      secretName: airflow-test-tls
-```
-
 ---
 
-## 11. Namespace Isolation Strategy
+## 12. Isolation Strategy
 
-### 11.1 What Each Namespace Contains
+### 12.1 How Sessions Are Isolated Without Namespaces
 
-```
-namespace: session-{session-id}
-├── ResourceQuota          — CPU/memory/pod limits
-├── NetworkPolicy          — deny cross-session traffic
-├── Secret: airflow-secrets — per-session credentials
-├── StatefulSet: postgres   — isolated metadata DB
-├── Deployment: airflow-webserver
-├── Deployment: airflow-scheduler
-├── Service: postgres (headless)
-├── Service: airflow-webserver
-├── Job: airflow-init (runs once, then deleted)
-└── Ingress: airflow-ingress — path /session/{id}/*
-```
-
-### 11.2 Isolation Guarantees
-
-| Isolation Type | Mechanism | Guarantee |
+| Isolation Type | Mechanism | Detail |
 |---|---|---|
-| Network | NetworkPolicy | No pod in session-A can reach session-B |
-| Resource | ResourceQuota | Session-A can't starve session-B of CPU/memory |
-| Secrets | Per-namespace Kubernetes Secret | Session-A cannot read session-B's DB password |
-| DNS | Kubernetes namespace-scoped DNS | `postgres.session-A` ≠ `postgres.session-B` |
-| Storage | Per-session PVC | Each postgres gets its own EBS volume |
+| **Network** | NetworkPolicy (pod label selector) | Pod in session A can't reach pods in session B |
+| **Resource** | Pod-level `limits` + namespace `LimitRange` | Session A can't starve session B of CPU/memory |
+| **Secrets** | Per-session K8s Secret (`airflow-secrets-{id}`) | Session A's pods can't read session B's credentials |
+| **DNS** | Service naming (`postgres-{session-id}`) | Session A's webserver connects to `postgres-{id-A}` not `postgres-{id-B}` |
+| **Storage** | Per-session PVC (`postgres-pvc-{id}`) | Each postgres pod has its own EBS volume |
+
+### 12.2 NetworkPolicy Isolation Visualized
+
+```
+namespace: airflow-sessions
+
+  session-id=abc123               session-id=def456
+  ┌──────────────────────┐        ┌──────────────────────┐
+  │ webserver-abc123     │        │ webserver-def456     │
+  │ scheduler-abc123     │◄──────►│ scheduler-def456     │
+  │ postgres-abc123      │   ✗    │ postgres-def456      │
+  └──────────────────────┘        └──────────────────────┘
+  (blocked by NetworkPolicy — pods can only talk to same session-id)
+
+  NGINX Ingress Controller
+  ┌──────────────────────┐
+  │ /session/abc123/* ───┼──────► webserver-svc-abc123:8080  ✅
+  │ /session/def456/* ───┼──────► webserver-svc-def456:8080  ✅
+  │ /session/abc123/* ───┼──X───► webserver-svc-def456:8080  ✗ (wrong rule)
+  └──────────────────────┘
+```
 
 ---
 
-## 12. Security
+## 13. Security
 
-### 12.1 IRSA — IAM Roles for Service Accounts
+### 13.1 IRSA — IAM Roles for Service Accounts
 
 ```bash
-# Associate IAM role with Kubernetes service account
-# Session Manager API gets permission to call DynamoDB and Secrets Manager
+# Session Manager API gets scoped AWS permissions
 eksctl create iamserviceaccount \
   --name session-manager \
-  --namespace session-manager \
+  --namespace system \
   --cluster airflow-test-cluster \
   --attach-policy-arn arn:aws:iam::aws:policy/AmazonDynamoDBFullAccess \
   --attach-policy-arn arn:aws:iam::aws:policy/SecretsManagerReadWrite \
   --approve
 ```
 
-### 12.2 RBAC — Session Manager Permissions
+### 13.2 RBAC
 
 ```yaml
 # rbac/session-manager-role.yaml
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role                    # Role (not ClusterRole) — scoped to airflow-sessions only
 metadata:
   name: session-manager
+  namespace: airflow-sessions
 rules:
   - apiGroups: [""]
-    resources: ["namespaces", "services", "secrets",
-                "resourcequotas", "pods"]
+    resources: ["pods", "services", "secrets", "persistentvolumeclaims"]
     verbs: ["create", "get", "list", "delete", "patch", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
     verbs: ["create", "get", "list", "delete", "patch"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "get", "list", "delete"]
+    verbs: ["create", "get", "list", "delete", "watch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["create", "get", "list", "delete", "patch"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: session-manager
+  namespace: airflow-sessions
 subjects:
   - kind: ServiceAccount
     name: session-manager
-    namespace: session-manager
+    namespace: system
 roleRef:
-  kind: ClusterRole
+  kind: Role
   name: session-manager
   apiGroup: rbac.authorization.k8s.io
 ```
 
-### 12.3 Pod Security Standards
+> **Note:** Using `Role` (not `ClusterRole`) scopes the Session Manager to only the `airflow-sessions` namespace. It cannot read or write to any other namespace.
 
-```yaml
-# Enforce restricted pod security on all session namespaces
-# Applied automatically via namespace label
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: session-{SESSION_ID}
-  labels:
-    pod-security.kubernetes.io/enforce: baseline
-    pod-security.kubernetes.io/audit:   restricted
-    pod-security.kubernetes.io/warn:    restricted
+### 13.3 Per-Session Credentials
+
+```python
+# secrets.py
+import secrets
+from cryptography.fernet import Fernet
+
+def generate_session_credentials() -> dict:
+    """Fresh credentials for every session — never reused."""
+    return {
+        "db-password":          secrets.token_urlsafe(24),
+        "fernet-key":           Fernet.generate_key().decode(),
+        "webserver-secret-key": secrets.token_urlsafe(32),
+        "admin-password":       secrets.token_urlsafe(16),
+    }
 ```
+
+Credentials are stored only in the per-session Kubernetes Secret (`airflow-secrets-{session-id}`). When the session is terminated and the Secret is deleted, the credentials are gone — no AWS Secrets Manager needed.
 
 ---
 
-## 13. Cost Optimization
+## 14. Cost Optimization
 
-### 13.1 Cost Per Session
+### 14.1 Cost Per Session (Bin-Packed)
+
+An `m5.xlarge` (4 vCPU, 16 GB) fits approximately 2 sessions (each using ~1.25 vCPU, ~2.5 GB):
 
 | Resource | Rate | 1-hour Session | Notes |
 |---|---|---|---|
-| m5.xlarge node (shared) | $0.192/hr | ~$0.048 | 4 sessions per node |
-| EBS (5 GB postgres PVC) | $0.0001/hr | ~$0.0001 | gp3, deleted after session |
-| ALB/NLB (shared) | $0.008/hr | ~$0.002 | One NLB for all sessions |
+| Compute (½ m5.xlarge) | $0.096/hr | ~$0.048 | Bin-packed — 2 sessions per node |
+| EBS PVC (5 GB postgres) | ~$0.0001/hr | ~$0.0001 | Deleted after session |
+| NLB (shared) | ~$0.002/hr | ~$0.002 | One NLB for all sessions |
 | EKS cluster fee | $0.10/hr | ~$0.002 | Amortized across sessions |
 | **Total** | | **~$0.05/session** | Per 1-hour session |
 
-> Kubernetes is the most cost-efficient at scale because sessions are bin-packed onto shared nodes rather than having a dedicated Fargate task per session.
-
-### 13.2 Cost Controls
+### 14.2 Cost Controls
 
 ```python
 # cost_controls.py
 
-# Spot node group for non-critical (free-tier) sessions
-SPOT_NODE_SELECTOR = {"role": "session", "tier": "spot"}
-ONDEMAND_NODE_SELECTOR = {"role": "session", "tier": "ondemand"}
-
 MAX_TTL_MINUTES         = 120
 MAX_CONCURRENT_SESSIONS = 500
-WARM_POOL_SIZE          = 10
-
-def get_node_selector(customer_tier: str) -> dict:
-    """Route free-tier customers to spot nodes, paid to on-demand."""
-    if customer_tier == "free":
-        return SPOT_NODE_SELECTOR
-    return ONDEMAND_NODE_SELECTOR
 
 def get_active_session_count() -> int:
-    """Count running session namespaces."""
+    """Count active sessions by querying running pods in the namespace."""
     k8s_core = client.CoreV1Api()
-    nss = k8s_core.list_namespace(
-        label_selector="airflow-test/pool-status=assigned"
+    pods = k8s_core.list_namespaced_pod(
+        "airflow-sessions",
+        label_selector="app.kubernetes.io/component=webserver"
     )
-    return len(nss.items)
+    return len([p for p in pods.items if p.status.phase == "Running"])
 
-# Orphan cleanup Lambda — also runs every 5 min
-def cleanup_orphaned_namespaces():
-    """Delete session namespaces older than 3 hours regardless of state."""
+def cleanup_orphaned_sessions():
+    """
+    Find pods older than 3 hours in the airflow-sessions namespace
+    and delete all resources for that session.
+    Runs as a Lambda every 15 minutes as a safety net.
+    """
     from datetime import datetime, timezone, timedelta
     k8s_core = client.CoreV1Api()
-    nss = k8s_core.list_namespace(
-        label_selector="airflow-test/pool-status=assigned"
+    pods = k8s_core.list_namespaced_pod(
+        "airflow-sessions",
+        label_selector="app.kubernetes.io/component=webserver"
     )
     now = datetime.now(timezone.utc)
-    for ns in nss.items:
-        created = ns.metadata.creation_timestamp
-        if created and (now - created.replace(tzinfo=timezone.utc)) > timedelta(hours=3):
-            print(f"Orphaned namespace: {ns.metadata.name}")
-            k8s_core.delete_namespace(ns.metadata.name)
+    for pod in pods.items:
+        age = now - pod.metadata.creation_timestamp.replace(tzinfo=timezone.utc)
+        if age > timedelta(hours=3):
+            session_id = pod.metadata.labels.get("app.kubernetes.io/session-id")
+            if session_id:
+                print(f"Orphaned session: {session_id} — age: {age}")
+                terminate_session(session_id)
 ```
 
 ---
 
-## 14. Deployment Guide
+## 15. Deployment Guide
 
-### 14.1 Prerequisites
+### 15.1 Prerequisites
 
 ```bash
 # Install tools
 brew install eksctl kubectl helm
 pip install kubernetes boto3 fastapi uvicorn httpx pydantic cryptography
 
-# Configure AWS credentials
+# Configure AWS
 aws configure
 
-# Install eksctl cluster
+# Create EKS cluster
 eksctl create cluster -f cluster/cluster.yaml
 
 # Update kubeconfig
-aws eks update-kubeconfig \
-  --name airflow-test-cluster \
-  --region us-east-1
+aws eks update-kubeconfig --name airflow-test-cluster --region us-east-1
 ```
 
-### 14.2 Step-by-Step Deployment
+### 15.2 Step-by-Step Deployment
 
 ```bash
-# Step 1: Install cluster addons
+# Step 1: Create namespaces
+kubectl create namespace airflow-sessions
+kubectl create namespace system
+
+# Step 2: Apply namespace-level policies (once only)
+kubectl apply -f cluster/namespace-policies.yaml
+
+# Step 3: Install NGINX Ingress
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm install ingress-nginx ingress-nginx/ingress-nginx \
-  --namespace ingress-nginx --create-namespace
+  --namespace system
 
+# Step 4: Install cert-manager
+helm repo add jetstack https://charts.jetstack.io
 helm install cert-manager jetstack/cert-manager \
-  --namespace cert-manager --create-namespace \
-  --set installCRDs=true
+  --namespace system --set installCRDs=true
 
-# Step 2: Install Karpenter
+# Step 5: Install Karpenter
 helm install karpenter oci://public.ecr.aws/karpenter/karpenter \
-  --namespace karpenter --create-namespace \
-  --version v0.33.0
-
+  --namespace system --version v0.33.0
 kubectl apply -f cluster/karpenter-nodepool.yaml
 
-# Step 3: Build and push Airflow image
-./scripts/build_and_push.sh
-
-# Step 4: Create system namespaces and RBAC
-kubectl create namespace session-manager
+# Step 6: Apply RBAC
 kubectl apply -f rbac/session-manager-role.yaml
 
-# Step 5: Deploy Session Manager API
+# Step 7: Build and push Airflow image
+./scripts/build_and_push.sh
+
+# Step 8: Deploy Session Manager API
 kubectl apply -f k8s/session-manager-deployment.yaml
 
-# Step 6: Bootstrap warm pool
-kubectl exec -n session-manager \
-  deployment/session-manager -- \
-  python -c "from warm_pool.pool_manager import replenish_warm_pool; replenish_warm_pool()"
+# Step 9: Create DynamoDB table
+aws dynamodb create-table \
+  --table-name airflow-test-sessions \
+  --attribute-definitions \
+    AttributeName=session_id,AttributeType=S \
+    AttributeName=customer_id,AttributeType=S \
+  --key-schema AttributeName=session_id,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --global-secondary-indexes '[
+    {
+      "IndexName": "customer_id-index",
+      "KeySchema": [{"AttributeName": "customer_id","KeyType":"HASH"}],
+      "Projection": {"ProjectionType": "ALL"}
+    }
+  ]'
 
-# Step 7: Deploy TTL cleanup Lambda
-cd lambda/ttl_cleanup && ./deploy.sh
+aws dynamodb update-time-to-live \
+  --table-name airflow-test-sessions \
+  --time-to-live-specification Enabled=true,AttributeName=ttl
 ```
 
-### 14.3 Example API Usage
+### 15.3 Example API Usage
 
 ```bash
-# Start a session (warm pool hit — instant)
+# Start a session
 curl -X POST https://api.yourdomain.com/sessions/start \
   -H "Content-Type: application/json" \
   -d '{"customer_id": "cust_123", "ttl_minutes": 60}'
 
 # Response:
 # {
-#   "session_id": "a1b2c3d4-e5f6-...",
-#   "airflow_url": "https://test.yourdomain.com/session/a1b2c3d4-e5f6-...",
+#   "session_id": "a1b2c3d4",
+#   "airflow_url": "https://test.yourdomain.com/session/a1b2c3d4",
 #   "status": "READY",
 #   "ttl_minutes": 60,
-#   "credentials": {"username": "admin", "password": "xK9mP2qR..."},
-#   "warm_pool_hit": true
+#   "credentials": {"username": "admin", "password": "xK9mP2qR..."}
 # }
 
-# Check pool status
-kubectl get namespaces -l airflow-test/pool-status=ready
+# Inspect all running sessions (single namespace — clean and simple)
+kubectl get pods -n airflow-sessions \
+  -L app.kubernetes.io/session-id,app.kubernetes.io/component
 
-# Check all active sessions
-kubectl get namespaces -l airflow-test/pool-status=assigned
+# Inspect a specific session
+kubectl get all -n airflow-sessions \
+  -l app.kubernetes.io/session-id=a1b2c3d4
+
+# Logs for a specific session
+kubectl logs -n airflow-sessions \
+  -l app.kubernetes.io/session-id=a1b2c3d4,app.kubernetes.io/component=webserver
 
 # End session early
-curl -X DELETE https://api.yourdomain.com/sessions/a1b2c3d4-e5f6-...
+curl -X DELETE https://api.yourdomain.com/sessions/a1b2c3d4
 ```
 
-### 14.4 Project Structure
+### 15.4 Project Structure
 
 ```
 airflow-k8s/
 ├── api/
 │   ├── main.py                  # FastAPI Session Manager
-│   ├── k8s_launcher.py          # Kubernetes namespace + resource creation
+│   ├── k8s_launcher.py          # K8s resource create/delete
 │   ├── session_store.py         # DynamoDB session state
 │   ├── cost_controls.py         # Session caps + orphan cleanup
 │   └── requirements.txt
-├── warm_pool/
-│   └── pool_manager.py          # Pre-warmed namespace pool
 ├── manifests/
-│   ├── namespace.yaml
-│   ├── resource-quota.yaml
-│   ├── network-policy.yaml
-│   ├── secrets.yaml
-│   ├── postgres.yaml
-│   ├── airflow-init.yaml
-│   ├── airflow-webserver.yaml
-│   ├── airflow-scheduler.yaml
+│   ├── secret.yaml
+│   ├── postgres.yaml            # StatefulSet + headless Service
+│   ├── airflow-init.yaml        # Init Job
+│   ├── airflow-webserver.yaml   # Deployment + Service
+│   ├── airflow-scheduler.yaml   # Deployment
+│   ├── network-policy.yaml      # Pod-level isolation
 │   └── ingress.yaml
 ├── lambda/
 │   └── ttl_cleanup/
 │       └── handler.py
 ├── cluster/
-│   ├── cluster.yaml             # eksctl cluster definition
-│   └── karpenter-nodepool.yaml
+│   ├── cluster.yaml             # eksctl definition
+│   ├── karpenter-nodepool.yaml
+│   └── namespace-policies.yaml  # LimitRange (applied once)
 ├── rbac/
 │   └── session-manager-role.yaml
 ├── k8s/
@@ -1661,69 +1763,71 @@ airflow-k8s/
 
 ---
 
-## 15. Monitoring & Observability
+## 16. Monitoring & Observability
 
-### 15.1 Prometheus + Grafana Stack
+### 16.1 Useful kubectl Commands for Operations
 
 ```bash
-helm repo add prometheus-community \
-  https://prometheus-community.github.io/helm-charts
+# How many sessions are currently active?
+kubectl get pods -n airflow-sessions \
+  -l app.kubernetes.io/component=webserver \
+  --field-selector=status.phase=Running | wc -l
 
-helm install kube-prometheus-stack \
-  prometheus-community/kube-prometheus-stack \
-  --namespace monitoring --create-namespace \
-  --set grafana.enabled=true \
-  --set prometheus.prometheusSpec.retention=7d
+# Which sessions are unhealthy?
+kubectl get pods -n airflow-sessions \
+  --field-selector=status.phase!=Running \
+  -L app.kubernetes.io/session-id
+
+# Resource usage across all sessions
+kubectl top pods -n airflow-sessions \
+  --sort-by=cpu
+
+# Are any pods in CrashLoopBackOff?
+kubectl get pods -n airflow-sessions | grep -v Running | grep -v Completed
 ```
 
-### 15.2 Key Metrics to Monitor
-
-| Metric | Source | Alert Threshold |
-|---|---|---|
-| `airflow_test_active_sessions` | Custom / DynamoDB | > 400 |
-| `airflow_test_warm_pool_size` | Custom | < 3 (refill immediately) |
-| `airflow_test_startup_seconds` | Custom | > 30 sec |
-| `kube_namespace_status_phase` | kube-state-metrics | Any session namespace stuck in Terminating > 5 min |
-| `container_cpu_usage_seconds_total` | cAdvisor | > 90% of quota |
-| `karpenter_nodes_total` | Karpenter | Unexpected spike > 50 nodes |
-| `nginx_ingress_controller_requests` | NGINX | Error rate > 1% |
-| `airflow_test_sessions_failed` | Custom | > 3 in 5 min |
-
-### 15.3 Custom Metrics Publisher
+### 16.2 Prometheus Metrics
 
 ```python
 # monitoring.py
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
 
-sessions_started   = Counter("airflow_test_sessions_started_total",   "Total sessions started")
-sessions_failed    = Counter("airflow_test_sessions_failed_total",     "Total sessions failed")
-sessions_active    = Gauge("airflow_test_active_sessions",             "Currently active sessions")
-warm_pool_size     = Gauge("airflow_test_warm_pool_size",              "Warm namespaces available")
-startup_duration   = Histogram(
+sessions_started  = Counter("airflow_test_sessions_started_total",  "Total sessions started")
+sessions_failed   = Counter("airflow_test_sessions_failed_total",   "Total sessions failed")
+sessions_active   = Gauge(  "airflow_test_active_sessions",         "Currently active sessions")
+startup_duration  = Histogram(
     "airflow_test_startup_seconds",
     "Time from request to READY",
     buckets=[5, 10, 15, 20, 30, 45, 60, 90, 120]
 )
 
-# Start metrics server on :9090 (scraped by Prometheus)
-start_http_server(9090)
+start_http_server(9090)   # Scraped by Prometheus in system namespace
 ```
+
+### 16.3 Key Alerts
+
+| Alert | Threshold | Action |
+|---|---|---|
+| `airflow_test_active_sessions` | > 400 | Scale review |
+| `airflow_test_sessions_failed` | > 3 in 5 min | Investigate pod scheduling |
+| Pod `CrashLoopBackOff` | Any | Check logs: `kubectl logs -n airflow-sessions -l session-id=X` |
+| `airflow_test_startup_seconds` p95 | > 60 sec | Check node availability, image pull times |
+| Node CPU | > 80% | Karpenter should auto-provision — check if stuck |
 
 ---
 
-## 16. Appendix: Design Decisions
+## 17. Appendix: Design Decisions
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| EKS vs self-managed K8s | Amazon EKS | AWS manages control plane; reduces operational burden while keeping full K8s flexibility |
-| Namespace-per-session isolation | Kubernetes Namespace | Richer isolation than ECS task boundaries — RBAC, NetworkPolicy, ResourceQuota all namespace-scoped |
-| Warm pod pool | Yes (10 default) | Eliminates cold start for common case; critical for responsive UX at scale |
-| Node autoscaler | Karpenter (not Cluster Autoscaler) | Karpenter provisions nodes in ~60 sec vs ~3 min for CA; bin-packs sessions more efficiently |
-| PostgreSQL as StatefulSet sidecar | StatefulSet with ephemeral PVC | Cheaper than RDS per session; PVC deleted with namespace guarantees clean state |
-| LocalExecutor vs KubernetesExecutor | LocalExecutor | No task Pod overhead for single-user test sessions; KubernetesExecutor is for production scale |
-| TTL cleanup | EventBridge Lambda (external) | External cleanup survives API restarts and namespace failures; more reliable than in-cluster CronJob |
-| Ingress | NGINX (not AWS ALB Ingress Controller) | NGINX supports path rewriting + `X-Forwarded-Prefix` header natively; simpler for Airflow URL routing |
-| TLS | cert-manager (Let's Encrypt) | Free, auto-renewed certificates; no manual certificate management |
-| Node pricing | Mix of on-demand + spot | Free-tier sessions on spot (70% cheaper); paid sessions on on-demand (reliable) |
-| Cost per session at scale | ~$0.05/session | Most efficient of three approaches due to bin-packing multiple sessions per node |
-| IRSA for AWS access | IAM Roles for Service Accounts | Least-privilege: Session Manager Pod gets only DynamoDB + Secrets Manager access, no node-level AWS credentials |
+| Single namespace vs namespace-per-session | **Single namespace** | No namespace proliferation; same isolation achievable via labels + NetworkPolicy |
+| Session identification | Kubernetes labels (`session-id`) | Standard K8s primitive — works with all kubectl commands, selectors, and policies |
+| Cleanup mechanism | `delete_collection` with label selector | One call per resource type removes everything — clean and atomic |
+| NetworkPolicy scope | Pod label selector (not namespace) | Achieves same cross-session isolation as namespace boundary |
+| RBAC scope | `Role` (not `ClusterRole`) | Scopes Session Manager to `airflow-sessions` namespace only |
+| Per-session Secrets | Kubernetes Secret in shared namespace | Deleted with session; no AWS Secrets Manager needed |
+| PostgreSQL | StatefulSet sidecar per session | Ephemeral — PVC deleted when session ends; cheaper than RDS per session |
+| Node autoscaler | Karpenter | Faster node provisioning (~60 sec) than Cluster Autoscaler; better bin-packing |
+| Executor | LocalExecutor | No Redis/Celery overhead for single-user test sessions |
+| Scheduler | `USE_JOB_SCHEDULE=false` | Prevents auto-scheduling; test sessions trigger DAGs manually only |
+| Cost per session | ~$0.05/session | Bin-packing 2 sessions per m5.xlarge node — cheapest of all three approaches |
