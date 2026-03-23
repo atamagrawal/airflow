@@ -1,6 +1,6 @@
 # Per-Customer Agent Architecture — Design Document
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Status:** Draft  
 **Authors:** Platform Team  
 **Last Updated:** 2026-03-22
@@ -20,12 +20,13 @@
 9. [Control Plane & Routing](#control-plane--routing)
 10. [Warm Pool Design](#warm-pool-design)
 11. [Sidecar Alternative](#sidecar-alternative)
-12. [Security](#security)
-13. [Observability](#observability)
-14. [Failure Modes & Mitigations](#failure-modes--mitigations)
-15. [Cost Model](#cost-model)
-16. [Implementation Phases](#implementation-phases)
-17. [Open Questions](#open-questions)
+12. [Agent Runtime: EC2 vs Kubernetes Pod](#agent-runtime-ec2-vs-kubernetes-pod)
+13. [Security](#security)
+14. [Observability](#observability)
+15. [Failure Modes & Mitigations](#failure-modes--mitigations)
+16. [Cost Model](#cost-model)
+17. [Implementation Phases](#implementation-phases)
+18. [Open Questions](#open-questions)
 
 ---
 
@@ -623,7 +624,172 @@ containers:
 
 ---
 
-## 12. Security
+## 12. Agent Runtime: EC2 vs Kubernetes Pod
+
+This section documents the decision rationale for choosing Kubernetes pods as the agent runtime over EC2 instances, and defines the hybrid model for enterprise customers.
+
+### Decision: Kubernetes pod (standard), EC2 (enterprise tier only)
+
+Since the Airflow tenant environments are already Kubernetes namespaces, the agent runs as a **Kubernetes pod** for standard customers. EC2 is reserved as a premium option for enterprise customers who need dedicated infrastructure.
+
+### Full comparison
+
+| Dimension | EC2 instance | Kubernetes pod |
+|---|---|---|
+| Startup time (dormant → serving) | 60–120s (AMI boot) | 1–5s (cached image), <1s from warm pool |
+| Docker for test mode | Native — installed on OS directly | Needs DinD sidecar or privileged container |
+| Cost at idle | ~$15/mo per instance (t3.small) | ~$0.10/mo (bin-packed on shared node) |
+| Density at 75 active agents | 75 EC2 instances minimum | 3–5 shared nodes (20–40 pods per node) |
+| Ops burden | High — AMI patches, SSM, instance lifecycle | Low — redeploy image, K8s manages lifecycle |
+| Per-agent isolation | Strong — full OS boundary, separate VPC possible | Good — cgroup + kernel namespaces, NetworkPolicy |
+| Warm pool feasibility | No — 90s boot makes true on-demand impractical | Yes — pod starts in seconds from cached image |
+| Upgrade path | AMI pipeline + rolling replace | `kubectl rollout restart` |
+| Best for | Long-lived sessions, heavy Docker workloads, air-gapped | Short-lived on-demand sessions, already on K8s |
+
+### Why EC2 fails the on-demand requirement
+
+The warm pool model only works if a dormant agent can become active in under 5 seconds. EC2 boot time is 60–120 seconds even with a pre-baked AMI. This means you either:
+
+- Keep EC2 instances running idle 24/7 (expensive — $15/mo × 1,000 = $15,000/mo just for agents), or
+- Accept 2-minute cold starts on every new customer session (terrible UX).
+
+Neither is acceptable. Kubernetes pods start in 1–5 seconds from a cached image, making the warm pool viable and on-demand agents practical.
+
+### Why pod wins on cost
+
+```
+EC2 always-on (1,000 agents):   1,000 × t3.small × $15/mo = $15,000/mo
+EC2 on-demand (100 active):       100 × t3.small × $15/mo =  $1,500/mo  (still needs warm fleet)
+
+Pod always-on (1,000 agents):   1,000 × 128MB pod × $0.10/mo =   $100/mo
+Pod on-demand (warm pool of 25):   25 warm + 75 active pods       =    ~$70/mo
+```
+
+Pod model is **200x cheaper** than EC2 always-on, and **20x cheaper** than EC2 on-demand.
+
+### The hybrid model: pods for standard, EC2 for enterprise
+
+```
+Standard tier   →  Kubernetes pod agent
+                   Warm pool, shared node
+                   DinD sidecar for test mode
+                   Cold start: < 1s from pool
+
+Enterprise tier →  Dedicated EC2 agent
+                   Provisioned on login, terminated on idle
+                   Native Docker — no DinD needed
+                   Full OS isolation, dedicated ENI
+                   Cold start: ~90s (acceptable for enterprise sessions)
+                   Billed per session-hour to the customer
+```
+
+This creates a natural upsell: enterprise customers get a dedicated machine with native Docker, OS-level isolation, and no noisy-neighbor concerns. Standard customers get fast, cheap, on-demand pods.
+
+### EC2 agent provisioning (enterprise tier)
+
+When an enterprise customer logs in, the control plane provisions a dedicated EC2 agent via the AWS SDK:
+
+```python
+async def provision_ec2_agent(customer_id: str) -> str:
+    # Launch pre-baked AMI with agent binary + Docker pre-installed
+    response = await ec2.run_instances(
+        ImageId=AGENT_AMI_ID,           # AMI with agent + Docker CE pre-installed
+        InstanceType="t3.medium",       # 2 vCPU / 4 GB — enough for Docker test stack
+        MinCount=1, MaxCount=1,
+        SubnetId=AGENT_SUBNET_ID,       # private subnet, no public IP
+        SecurityGroupIds=[AGENT_SG_ID],
+        IamInstanceProfile={"Name": "customer-agent-role"},
+        UserData=base64.b64encode(f"""
+            #!/bin/bash
+            export CUSTOMER_ID={customer_id}
+            export VAULT_ADDR=https://vault.internal
+            export PLATFORM_ENV=production
+            systemctl enable --now customer-agent
+        """.encode()).decode(),
+        TagSpecifications=[{
+            "ResourceType": "instance",
+            "Tags": [
+                {"Key": "customer-id",  "Value": customer_id},
+                {"Key": "managed-by",   "Value": "platform"},
+                {"Key": "tier",         "Value": "enterprise"},
+            ]
+        }],
+        InstanceInitiatedShutdownBehavior="terminate"  # self-terminates on agent exit
+    )
+
+    instance_id = response["Instances"][0]["InstanceId"]
+
+    # Wait for agent to boot and self-register with control plane (~90s)
+    agent_url = await wait_for_agent_registration(
+        customer_id=customer_id,
+        timeout_seconds=120
+    )
+    return agent_url
+
+async def terminate_ec2_agent(customer_id: str, instance_id: str):
+    """Called by idle reaper after IDLE_TIMEOUT for enterprise agents."""
+    await ec2.terminate_instances(InstanceIds=[instance_id])
+    await registry.delete(customer_id)
+    await db.update_agent_state(customer_id, "dormant")
+```
+
+The agent binary on the EC2 instance self-registers with the control plane on startup and self-deregisters on shutdown, following the same lifecycle state machine as pod agents.
+
+### AMI bake pipeline
+
+The EC2 agent AMI is rebuilt on every agent release using a Packer pipeline:
+
+```json
+{
+  "builders": [{
+    "type": "amazon-ebs",
+    "instance_type": "t3.small",
+    "source_ami_filter": {
+      "filters": { "name": "ubuntu/images/hvm-ssd/ubuntu-22.04-*" }
+    }
+  }],
+  "provisioners": [
+    { "type": "shell", "script": "install-docker.sh"   },
+    { "type": "shell", "script": "install-agent.sh"    },
+    { "type": "shell", "script": "configure-vault.sh"  }
+  ]
+}
+```
+
+Target AMI boot-to-serving time: **under 90 seconds**.
+
+### Routing layer: pod vs EC2 agents are transparent
+
+The control plane router does not care whether the agent is a pod or an EC2 instance. Both register the same way in the agent registry (`customer_id → agent_url`). The only difference is how they are provisioned and how they are reaped.
+
+```python
+async def route(self, customer_id: str, request: Request) -> Response:
+    if agent_url := await self.registry.get(customer_id):
+        return await forward(agent_url, request)
+
+    customer = await db.get_customer(customer_id)
+
+    if customer.tier == "enterprise":
+        agent_url = await provision_ec2_agent(customer_id)   # ~90s
+    else:
+        agent_url = await warm_pool.acquire_and_init(customer_id)  # <1s
+
+    await self.registry.set(customer_id, agent_url)
+    return await forward(agent_url, request)
+```
+
+### Decision record
+
+| Option considered | Verdict | Reason |
+|---|---|---|
+| EC2 for all agents | Rejected | 90s cold start breaks on-demand model; 20x more expensive |
+| Pod for all agents | Accepted for standard tier | Fast, cheap, fits existing K8s infra |
+| EC2 for enterprise, pod for standard | Accepted | EC2 isolation story + native Docker worth premium price |
+| Fargate tasks as agents | Rejected | 30–60s cold start, no persistent Docker daemon for test mode |
+
+---
+
+## 13. Security
 
 ### Secret management
 
@@ -691,7 +857,7 @@ Customer SDK/CLI
 
 ---
 
-## 13. Observability
+## 14. Observability
 
 ### Metrics (Prometheus)
 
@@ -743,11 +909,13 @@ Key panels to include:
 
 ---
 
-## 14. Failure Modes & Mitigations
+## 15. Failure Modes & Mitigations
 
 | Failure | Impact | Mitigation |
 |---|---|---|
 | Agent pod crashes | Customer requests fail until re-warmed | Control plane detects 503 → re-routes to new warm pod within < 5s |
+| EC2 agent instance terminated unexpectedly | Enterprise customer session lost | Control plane detects deregistration → re-provisions EC2; notify customer |
+| EC2 provision timeout (> 120s) | Enterprise customer sees slow login | Retry with different AZ; fall back to pod agent temporarily |
 | Warm pool exhausted | Cold start latency spikes to 15s | Alert on pool < min_size; autoscale pool; queue requests briefly |
 | Vault unreachable | Agent cannot initialize | Cached read from Vault Agent sidecar with short TTL; alert page |
 | DinD crash during test | Test deployment lost | Detect via health check; return error with instructions to retry |
@@ -771,9 +939,9 @@ The `/healthz` endpoint returns 200 only if the agent's core loop is functional.
 
 ---
 
-## 15. Cost Model
+## 16. Cost Model
 
-### Agent infrastructure cost (AWS us-east-1 estimate)
+### Standard tier — pod agent infrastructure (AWS us-east-1 estimate)
 
 | Component | Count | Spec | Monthly cost |
 |---|---|---|---|
@@ -781,16 +949,36 @@ The `/healthz` endpoint returns 200 only if the agent's core loop is functional.
 | Active agent pods | 75 avg | 0.2 vCPU / 256 MB | ~$60 |
 | DinD storage (emptyDir) | 25 active | 2 GB ephemeral | ~$0 |
 | Pool controller | 1 | 0.1 vCPU / 128 MB | ~$3 |
-| **Total agent overhead** | | | **~$71/month** |
+| **Total standard agent overhead** | | | **~$71/month** |
 
-This compares to the always-on model:
-- 1,000 pods × $0.10/month (128 MB each) = **~$100+/month in compute alone**, with added K8s API server pressure.
+### Enterprise tier — EC2 agent cost model
 
-The on-demand model pays for itself immediately at scale.
+EC2 agents are provisioned on demand and billed per session. Cost is passed through to the customer as a usage charge.
+
+| Component | Spec | Hourly cost | Notes |
+|---|---|---|---|
+| EC2 instance | t3.medium (2 vCPU / 4 GB) | ~$0.047/hr | On-demand; use Spot for non-critical |
+| EBS root volume | 20 GB gp3 | ~$0.002/hr | Terminated with instance |
+| Data transfer | varies | ~$0.01/GB | Outbound only |
+| **Typical 4-hour session** | | **~$0.25** | Well within enterprise pricing |
+
+A typical enterprise customer using the agent for 20 hours/month costs ~$1.00 in EC2 compute — easily absorbed into an enterprise plan.
+
+### Comparison: on-demand pod model vs always-on EC2
+
+```
+EC2 always-on (1,000 agents):    1,000 × t3.small × $15/mo  = $15,000/mo
+EC2 on-demand (100 active):        100 × t3.small × $15/mo  =  $1,500/mo
+
+Pod always-on (1,000 agents):    1,000 × 128MB pod           =    $100/mo
+Pod on-demand warm pool model:      25 warm + 75 active pods  =     $71/mo
+```
+
+The pod on-demand model is **200x cheaper** than EC2 always-on.
 
 ---
 
-## 16. Implementation Phases
+## 17. Implementation Phases
 
 ### Phase 1 — Sidecar MVP (weeks 1–6)
 
@@ -817,18 +1005,21 @@ The on-demand model pays for itself immediately at scale.
 - Add idle reaper cron.
 - Goal: 10x reduction in agent pod count at steady state.
 
-### Phase 4 — Hardening (weeks 21–26)
+### Phase 4 — Hardening + Enterprise EC2 (weeks 21–30)
 
 - Vault integration for secret injection.
 - Per-customer NetworkPolicy enforcement.
 - Full Prometheus metrics + Grafana dashboards.
 - Load test: 1,000 customers, 200 concurrent active sessions.
 - Chaos engineering: kill warm pool pods, Vault outage, DinD crash.
-- Goal: production-ready, SLA-backed.
+- **EC2 enterprise agent**: Packer AMI pipeline, EC2 provisioning API, idle reaper for instances.
+- **EC2 billing integration**: per-session-hour metering via Stripe usage records.
+- **AMI freshness**: automated weekly AMI rebuilds triggered by agent image releases.
+- Goal: production-ready, SLA-backed, enterprise tier live.
 
 ---
 
-## 17. Open Questions
+## 18. Open Questions
 
 | Question | Owner | Target date |
 |---|---|---|
@@ -838,6 +1029,9 @@ The on-demand model pays for itself immediately at scale.
 | Is Podman-rootless a viable alternative to DinD for security-sensitive customers? | Security | Phase 2 |
 | Should the agent be written in Go (lower memory) or Python (faster iteration)? | Platform team | Phase 1 kickoff |
 | How do we handle agent state during a rolling deploy of the agent image itself? | Platform team | Phase 3 |
+| For EC2 enterprise agents — should we use Spot instances with fallback to on-demand? | Infra team | Phase 4 |
+| What is the threshold for offering EC2 agent? Enterprise plan only, or a self-serve add-on? | Product | Phase 3 kickoff |
+| Should EC2 agents use a shared AMI or customer-specific AMIs for stronger isolation? | Security | Phase 4 |
 
 ---
 
