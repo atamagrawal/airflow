@@ -18,6 +18,9 @@
 # ── AIP-07 data contract: daily_orders ──────────────────────────────
 # This file is consumed by the YamlDataContractHook (connection type
 # "data_contract_yaml").  Each field maps 1-to-1 to DataContract attrs.
+#
+# Aligns with PostgreSQL DDL in sql/001_create_daily_orders.sql:
+# VARCHAR / DATE → STRING in contract stats; NUMERIC → FLOAT.
 
 contract_id: daily-orders-v1
 dataset_urn: "urn:li:dataset:(urn:li:dataPlatform:postgres,warehouse.daily_orders,PROD)"

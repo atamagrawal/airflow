@@ -16,40 +16,55 @@
 # under the License.
 
 """
-AIP-07 example — **Consumer DAG**.
+AIP-07 example — **Consumer DAG** (PostgreSQL).
 
-This DAG demonstrates how a downstream team can depend on an upstream
-data contract:
+Downstream analytics pattern:
 
-1. ``wait_for_orders`` — a :class:`ContractReadySensor` that blocks
-   until the ``daily_orders`` contract is ACTIVE and has been validated
-   after the current data interval.
-2. ``breach_guard`` — a :class:`ContractBreachGuardOperator` that fails
-   the run if any upstream dataset is in BREACHED state.
-3. ``build_report`` — a placeholder task representing the actual
-   consumer workload.
+1. ``wait_for_orders`` — :class:`ContractReadySensor` until the contract is
+   ``ACTIVE``.  ``min_update_time`` is left unset because the file-based YAML
+   catalog does not persist ``last_validated_at``; use DataHub (or another
+   catalog) if you need validation time vs. data interval checks.
+2. ``breach_guard`` — :class:`ContractBreachGuardOperator` blocks the run if
+   the upstream dataset is ``BREACHED``.
+3. ``report_revenue_by_day`` — reads ``warehouse.daily_orders`` in Postgres
+   and aggregates revenue for the last 7 days (real downstream SQL).
 
-Connection required
-~~~~~~~~~~~~~~~~~~~
-Same ``data_contract_yaml`` connection as the producer.  See README.
+Connections: same Postgres and YAML catalog as the producer.  See the README.
 """
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 from airflow.providers.data.contracts.operators.contract_breach_guard import ContractBreachGuardOperator
 from airflow.providers.data.contracts.sensors.contract_ready import ContractReadySensor
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.sdk import DAG, task
 
 DATASET_URN = "urn:li:dataset:(urn:li:dataPlatform:postgres,warehouse.daily_orders,PROD)"
 CATALOG_CONN_ID = "data_contract_yaml_default"
+POSTGRES_CONN_ID = os.environ.get("AIP07_POSTGRES_CONN_ID", "postgres_default")
 
 
 @task
-def build_report() -> str:
-    """Build a report from daily_orders — only runs when the contract is healthy."""
-    return "Report built successfully from daily_orders"
+def report_revenue_by_day() -> str:
+    """Aggregate recent order revenue from Postgres (consumer workload)."""
+    hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+    sql = """
+        SELECT
+            order_date::text AS day,
+            COUNT(*)::bigint AS orders,
+            COALESCE(SUM(amount), 0)::numeric(14, 2) AS revenue_usd
+        FROM warehouse.daily_orders
+        WHERE order_date >= (CURRENT_DATE - INTERVAL '7 days')
+        GROUP BY order_date
+        ORDER BY order_date DESC
+    """
+    rows = hook.get_records(sql)
+    lines = [f"{day}: {orders} orders, ${revenue} revenue" for day, orders, revenue in rows]
+    summary = "; ".join(lines) if lines else "no rows in the 7-day window"
+    return summary
 
 
 with DAG(
@@ -57,14 +72,14 @@ with DAG(
     schedule="@daily",
     start_date=datetime(2025, 1, 1),
     catchup=False,
-    tags=["aip-07", "data-contracts", "consumer"],
+    tags=["aip-07", "data-contracts", "consumer", "postgres"],
     doc_md=__doc__,
 ) as dag:
     wait = ContractReadySensor(
         task_id="wait_for_orders",
         catalog_conn_id=CATALOG_CONN_ID,
         dataset_urn=DATASET_URN,
-        min_update_time="{{ data_interval_end | ts }}",
+        min_update_time=None,
         poke_interval=30,
         timeout=3600,
         mode="poke",
@@ -78,6 +93,6 @@ with DAG(
         on_breach="fail",
     )
 
-    report = build_report()
+    report = report_revenue_by_day()
 
     wait >> guard >> report

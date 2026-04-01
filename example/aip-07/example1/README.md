@@ -17,66 +17,94 @@
  under the License.
 -->
 
-# AIP-07 Data Contracts — Example
+# AIP-07 Data Contracts — Example 1 (PostgreSQL)
 
-This directory contains a minimal, self-contained example of the
-**producer / consumer data-contract pattern** described in AIP-07.
+This example implements a **realistic producer / consumer flow** against a
+PostgreSQL table ``warehouse.daily_orders``: SQL files define DDL and load,
+the producer builds contract statistics from ``information_schema`` and row
+counts, and the consumer runs downstream aggregates in the same database.
 
 ```
 example/aip-07/example1/
 ├── contracts/
-│   └── daily_orders.yaml      # YAML data contract definition
+│   └── daily_orders.yaml      # Data contract (schema + SLAs)
+├── sql/
+│   ├── 001_create_daily_orders.sql   # CREATE SCHEMA / TABLE / INDEX
+│   └── 002_load_daily_orders.sql     # Daily DELETE + INSERT (templated {{ ds }})
 ├── dags/
-│   ├── aip07_producer.py      # Producer DAG: load → validate → publish
-│   └── aip07_consumer.py      # Consumer DAG: sensor → breach guard → report
-└── README.md                  # This file
+│   ├── aip07_producer.py      # DDL → load → stats → validate → publish
+│   └── aip07_consumer.py      # sensor → breach guard → SQL report
+└── README.md
 ```
 
-## What the example shows
+## Components
 
-| Component | Purpose |
+| Piece | Role |
 |---|---|
-| `daily_orders.yaml` | Defines schema (5 columns), quality rules (row count bounds, freshness SLA), and ownership metadata. |
-| `aip07_producer` DAG | Simulates an ETL load, validates output stats against the contract, then publishes status to the catalog. |
-| `aip07_consumer` DAG | Waits for the contract to be ACTIVE (`ContractReadySensor`), checks for breaches (`ContractBreachGuardOperator`), then runs a downstream task. |
+| ``001_create_daily_orders.sql`` | Creates ``warehouse.daily_orders`` (``VARCHAR``, ``DATE``, ``NUMERIC``, nullable ``status``). |
+| ``002_load_daily_orders.sql`` | Idempotent load for the logical date using Airflow macros. |
+| ``collect_contract_stats`` | Queries ``COUNT(*)`` and column metadata; maps PG types to contract types (``NUMERIC`` → ``FLOAT``, everything else used here → ``STRING``). |
+| ``ContractValidateOperator`` | Validates XCom stats against ``daily_orders.yaml``. |
+| ``report_revenue_by_day`` | Consumer task: 7-day revenue rollup from Postgres. |
+
+### Sensor note (YAML catalog)
+
+``ContractReadySensor`` is configured with ``min_update_time=None`` because the
+file-based YAML hook does not persist ``last_validated_at``.  For interval-based
+readiness against validation timestamps, use a catalog integration (for example
+DataHub) that updates ``last_validated_at``.
 
 ---
 
-## Quick start — run the unit tests
+## Prerequisites
 
-The fastest way to verify the provider logic (no Airflow instance needed):
+* Airflow with **PostgreSQL** provider and **common SQL** provider (typical in Breeze / full installs).
+* A running PostgreSQL instance reachable from Airflow.
+* **apache-airflow-providers-data-contracts** (this repo’s provider).
+
+Optional: set ``AIP07_POSTGRES_CONN_ID`` if you do not use the default
+``postgres_default`` connection id.
+
+---
+
+## Quick start — provider unit tests (no database)
 
 ```bash
-# From the repo root — run all data-contracts unit tests
 uv run --project providers/data/contracts \
   pytest providers/data/contracts/tests/unit/ -xvs
 ```
 
-Key test files:
-
-| File | Covers |
-|---|---|
-| `test_validators.py` | Schema, completeness, and freshness validation functions |
-| `test_contract_validate_operator.py` | `ContractValidateOperator` success and failure paths |
-| `test_models.py` | `DataContract` / `SchemaField` dataclass logic |
-| `test_local_yaml_hook.py` | `YamlDataContractHook` file loading |
-
 ---
 
-## Test with Breeze (full Airflow environment)
+## Run end-to-end in Breeze
 
-### 1. Start Breeze
+### 1. Enter Breeze
 
 ```bash
 breeze
 ```
 
-### 2. Create the YAML catalog connection
+Use Breeze’s PostgreSQL backend or add a **postgres** connection pointing at
+your database (host, login, database name, etc.).
 
-Inside the Breeze shell, create a connection that tells the
-`YamlDataContractHook` where to find contract files.  The contract
-YAML is mounted at `/opt/airflow/example/aip-07/contracts/daily_orders.yaml`
-inside Breeze (the repo root is mounted at `/opt/airflow`).
+### 2. Postgres connection
+
+If needed, add or adjust the default connection (example — adjust host/user/db):
+
+```bash
+airflow connections delete postgres_default 2>/dev/null || true
+airflow connections add postgres_default \
+  --conn-type postgres \
+  --conn-host localhost \
+  --conn-login airflow \
+  --conn-password airflow \
+  --conn-schema airflow \
+  --conn-port 5432
+```
+
+Ensure the database user can create schemas and tables.
+
+### 3. YAML catalog connection
 
 ```bash
 airflow connections add data_contract_yaml_default \
@@ -88,125 +116,59 @@ airflow connections add data_contract_yaml_default \
   }'
 ```
 
-### 3. Copy DAGs into the DAGs folder
+### 4. Install DAGs and SQL (paths must resolve inside the container)
 
 ```bash
 cp /opt/airflow/example/aip-07/example1/dags/*.py /opt/airflow/dags/
+# SQL files are loaded from paths computed in the DAG relative to example1/
 ```
 
-### 4. Verify the DAGs parse correctly
+The producer DAG resolves SQL paths from the file location under
+``/opt/airflow/example/aip-07/example1/sql/`` — keep the **example1** tree
+available at that path (default Breeze mount of the repo).
+
+### 5. Run the producer, then the consumer
 
 ```bash
-airflow dags list | grep aip07
+airflow dags test aip07_producer 2025-01-15
+airflow dags test aip07_consumer 2025-01-15
 ```
-
-Expected output:
-
-```
-aip07_producer  | …  | @daily | …
-aip07_consumer  | …  | @daily | …
-```
-
-### 5. Test individual tasks
-
-```bash
-# Run the producer "load_orders" task
-airflow tasks test aip07_producer load_orders 2025-01-01
-
-# Run the contract validation (needs load_orders XCom, so run the full DAG)
-airflow dags test aip07_producer 2025-01-01
-```
-
-### 6. Trigger via the UI
-
-Open `http://localhost:8080`, unpause both DAGs, and trigger
-`aip07_producer`.  Once it succeeds, `aip07_consumer` (if using the
-sensor) will proceed.
 
 ---
 
-## Test scenarios to try
+## Failure scenarios (edit SQL or data)
 
-### Happy path — contract passes
+### Schema mismatch
 
-The default `load_orders` stats match the contract perfectly (all 5
-columns, 42 rows which is within 1–1,000,000).  The producer DAG
-should succeed end-to-end.
+Drop a column in the database (or change ``002_load_daily_orders.sql`` to stop
+inserting into one column) **without** updating the YAML contract — validation
+should report a missing column.
 
-### Schema violation — missing column
+### Completeness / row count
 
-Edit `dags/aip07_producer.py` and remove the `amount` column from the
-stats dict in `load_orders`.  Re-run:
+Temporarily set ``DELETE`` to remove all rows for ``{{ ds }}`` without
+inserting, or lower ``min_row_count`` in the YAML to see pass/fail behavior.
 
-```bash
-airflow dags test aip07_producer 2025-01-01
-```
+### Breach guard
 
-The `validate_contract` task should fail with:
-`AirflowException: Contract validation failed: Missing required column 'amount'`
-
-### Completeness violation — too few rows
-
-Change `"row_count": 42` to `"row_count": 0` in `load_orders`.
-Re-run to see a COMPLETENESS violation.
-
-### Type mismatch
-
-Change `{"name": "amount", "type": "FLOAT", ...}` to
-`{"name": "amount", "type": "INTEGER", ...}` in the stats.  The
-validator catches the type difference.
-
-### Breach guard — consumer protection
-
-Change the contract YAML status from `ACTIVE` to `BREACHED`, then
-run the consumer DAG:
-
-```bash
-airflow dags test aip07_consumer 2025-01-01
-```
-
-The `breach_guard` task should fail with:
-`AirflowException: Upstream contract breach for: urn:li:dataset:…`
+Set ``status: BREACHED`` in ``daily_orders.yaml`` and run ``aip07_consumer``;
+``breach_guard`` should fail until you restore ``ACTIVE``.
 
 ---
 
-## Direct Python testing (no Airflow, no Breeze)
-
-You can also validate contract logic directly in a Python script:
+## Direct Python check (contract file only)
 
 ```python
 from airflow.providers.data.contracts.hooks.local_yaml import YamlDataContractHook
-from airflow.providers.data.contracts.validators.contract_validators import (
-    validate_schema,
-    validate_completeness,
-)
 
-# Load the contract from the YAML file
 contract = YamlDataContractHook.load_contract_from_file(
     "example/aip-07/example1/contracts/daily_orders.yaml"
 )
-print(f"Contract: {contract.contract_id}  status={contract.status}")
-print(f"Schema fields: {[f.name for f in contract.schema]}")
-
-# Validate some stats
-stats = {
-    "row_count": 42,
-    "schema": [
-        {"name": "order_id", "type": "STRING", "nullable": False},
-        {"name": "customer_id", "type": "STRING", "nullable": False},
-        {"name": "order_date", "type": "STRING", "nullable": False},
-        {"name": "amount", "type": "FLOAT", "nullable": False},
-        {"name": "status", "type": "STRING", "nullable": True},
-    ],
-}
-schema_violations = validate_schema(contract, stats)
-completeness_violations = validate_completeness(contract, stats)
-print(f"Schema violations: {len(schema_violations)}")
-print(f"Completeness violations: {len(completeness_violations)}")
+print(contract.contract_id, contract.schema)
 ```
 
-Save the script as `dev/test_contract.py` and run:
+Run with:
 
 ```bash
-uv run --project providers/data/contracts python dev/test_contract.py
+uv run --project providers/data/contracts python dev/your_script.py
 ```
