@@ -65,6 +65,13 @@ DataHub) that updates ``last_validated_at``.
 Optional: set ``AIP07_POSTGRES_CONN_ID`` if you do not use the default
 ``postgres_default`` connection id.
 
+### TaskFlow decorators (optional)
+
+To use ``@task.contract_validate`` / ``contract_publish`` / ``contract_ready`` /
+``contract_breach_guard`` instead of the classic operators, also install
+**apache-airflow-providers-data-contracts-decorators** (see ``impl/AIP-07-data-contracts.md``).
+A small end-to-end layout without Postgres lives under ``example/aip-07/minimal_decorators/``.
+
 ---
 
 ## Quick start — provider unit tests (no database)
@@ -72,6 +79,8 @@ Optional: set ``AIP07_POSTGRES_CONN_ID`` if you do not use the default
 ```bash
 uv run --project providers/data/contracts \
   pytest providers/data/contracts/tests/unit/ -xvs
+uv run --project providers/data/contracts_decorators \
+  pytest providers/data/contracts_decorators/tests/unit/ -xvs
 ```
 
 ---

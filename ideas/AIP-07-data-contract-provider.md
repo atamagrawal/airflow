@@ -23,6 +23,13 @@ entire organization sees pipeline health in one place.
 This is the "Pact for data pipelines" — the missing layer between data catalog
 governance and actual pipeline execution.
 
+> **Implementation in this repository:** Phase 1 uses the distributions
+> `apache-airflow-providers-data-contracts` and (optionally)
+> `apache-airflow-providers-data-contracts-decorators` for TaskFlow helpers, with
+> imports under `airflow.providers.data.contracts` and
+> `airflow.providers.data.contracts_decorators`. Authoritative layout and usage
+> notes: `impl/AIP-07-data-contracts.md`.
+
 ---
 
 ## Motivation

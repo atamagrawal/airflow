@@ -17,11 +17,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from airflow.providers.common.compat.sdk import BaseOperator
-from airflow.providers.data.contracts.hooks.base_catalog import get_catalog_hook
+from airflow.providers.data.contracts.contract_publish_runner import publish_contract_run
 
 if TYPE_CHECKING:
     from airflow.providers.common.compat.sdk import Context
@@ -33,6 +32,9 @@ class ContractPublishOperator(BaseOperator):
 
     Catalog-lite YAML connections only log; use a DataHub connection for real writes
     (ingest / OpenAPI patch is environment-specific and may require extra tooling).
+
+    For TaskFlow-style DAGs, install ``apache-airflow-providers-data-contracts-decorators`` and use
+    :func:`~airflow.providers.data.contracts_decorators.decorators.contract_publish.contract_publish_task`.
     """
 
     template_fields: Sequence[str] = (
@@ -65,7 +67,6 @@ class ContractPublishOperator(BaseOperator):
         self.emit_run_facet = emit_run_facet
 
     def execute(self, context: Context) -> None:
-        hook = get_catalog_hook(catalog_conn_id=self.catalog_conn_id)
         stats = None
         if self.stats_xcom_task_id:
             stats = context["ti"].xcom_pull(task_ids=self.stats_xcom_task_id, key=self.stats_xcom_key)
@@ -73,20 +74,13 @@ class ContractPublishOperator(BaseOperator):
                 msg = "Stats from XCom must be a dict when stats_xcom_task_id is set"
                 raise TypeError(msg)
 
-        desc = None
-        if self.emit_run_facet:
-            desc = f"Airflow dag_id={context['dag'].dag_id} run_id={context['run_id']}"
-
-        hook.emit_lineage(
-            self.dataset_urn,
-            self.upstream_urns,
-            transformation_description=desc,
+        publish_contract_run(
+            context=context,
+            catalog_conn_id=self.catalog_conn_id,
+            dataset_urn=self.dataset_urn,
+            upstream_urns=self.upstream_urns,
+            stats=stats,
+            update_contract_status=self.update_contract_status,
+            contract_status=self.contract_status,
+            emit_run_facet=self.emit_run_facet,
         )
-
-        if self.update_contract_status:
-            hook.update_contract_status(
-                self.dataset_urn,
-                self.contract_status,
-                last_validated_at=datetime.now(timezone.utc),
-                stats=stats,
-            )

@@ -17,11 +17,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from airflow.providers.common.compat.sdk import AirflowException, BaseSensorOperator
-from airflow.providers.data.contracts.hooks.base_catalog import get_catalog_hook
+from airflow.providers.common.compat.sdk import BaseSensorOperator
+from airflow.providers.data.contracts.contract_ready_runner import contract_ready_poke
 
 if TYPE_CHECKING:
     from airflow.providers.common.compat.sdk import Context
@@ -32,6 +31,9 @@ class ContractReadySensor(BaseSensorOperator):
     Wait until a dataset contract is ``ACTIVE`` and optionally validated after a minimum time.
 
     Template ``min_update_time`` with ``data_interval_end`` or similar for daily producers.
+
+    For TaskFlow-style DAGs, install ``apache-airflow-providers-data-contracts-decorators`` and use
+    :func:`~airflow.providers.data.contracts_decorators.decorators.contract_ready.contract_ready_task`.
     """
 
     template_fields: Sequence[str] = ("dataset_urn", "min_update_time")
@@ -51,39 +53,10 @@ class ContractReadySensor(BaseSensorOperator):
         self.min_update_time = min_update_time
         self.fail_on_breach = fail_on_breach
 
-    @staticmethod
-    def _parse_dt(value: str | None) -> datetime | None:
-        if not value:
-            return None
-        text = str(value).strip()
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed
-
     def poke(self, context: Context) -> bool:
-        hook = get_catalog_hook(catalog_conn_id=self.catalog_conn_id)
-        contract = hook.get_contract(self.dataset_urn)
-        status = contract.status.upper()
-
-        if self.fail_on_breach and status == "BREACHED":
-            msg = f"Contract for {self.dataset_urn} is BREACHED; failing sensor as requested"
-            raise AirflowException(msg)
-
-        if status != "ACTIVE":
-            return False
-
-        min_u = self._parse_dt(self.min_update_time)
-        if min_u and contract.last_validated_at:
-            lv = contract.last_validated_at
-            if lv.tzinfo is None:
-                lv = lv.replace(tzinfo=timezone.utc)
-            if lv < min_u:
-                return False
-        elif min_u and not contract.last_validated_at:
-            # Without a stamp we cannot prove freshness — keep waiting.
-            return False
-
-        return True
+        return contract_ready_poke(
+            catalog_conn_id=self.catalog_conn_id,
+            dataset_urn=self.dataset_urn,
+            min_update_time=self.min_update_time,
+            fail_on_breach=self.fail_on_breach,
+        )

@@ -23,6 +23,8 @@ or set ``CONTRACT_YAML`` to an absolute path.
 
 Requires: ``apache-airflow-providers-data-contracts`` (and Airflow with Task SDK).
 
+See also: ``example/aip-07/minimal_decorators/`` for the same scenario with TaskFlow decorators.
+
 ``catalog_conn_id`` is unused when ``contract_yaml_path`` is set and
 ``report_breach_to_catalog`` is False; a placeholder satisfies the operator API.
 """

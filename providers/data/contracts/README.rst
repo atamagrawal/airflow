@@ -23,4 +23,14 @@ provider for catalog-backed data contract validation (AIP-07).
 
 Python import path: ``airflow.providers.data.contracts``.
 
-Implementation notes and usage live in ``impl/AIP-07-data-contracts.md`` (repo root).
+Operators, hooks, sensors, and shared runner modules live in this package. TaskFlow decorators
+(``@task.contract_validate``, ``@task.contract_publish``, ``@task.contract_breach_guard``,
+``@task.contract_ready``) live in the sibling distribution
+``apache-airflow-providers-data-contracts-decorators`` (import root
+``airflow.providers.data.contracts_decorators``).
+
+Install both packages for decorator usage, or use the Airflow extra ``data.contracts.decorators``
+where available.
+
+Implementation notes, layout, and examples: ``impl/AIP-07-data-contracts.md`` (repo root).
+Example DAGs: ``example/aip-07/minimal_standalone/`` (operators), ``example/aip-07/minimal_decorators/`` (decorators).

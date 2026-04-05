@@ -194,6 +194,9 @@ apache-airflow = "airflow.__main__:main"
 "data.contracts" = [
     "apache-airflow-providers-data-contracts>=1.0.0" # Set from local provider pyproject.toml
 ]
+"data.contracts.decorators" = [
+    "apache-airflow-providers-data-contracts-decorators>=1.0.0" # Set from local provider pyproject.toml
+]
 "databricks" = [
     "apache-airflow-providers-databricks>=6.11.0"
 ]
@@ -396,7 +399,7 @@ apache-airflow = "airflow.__main__:main"
     "apache-airflow-providers-zendesk>=4.9.0"
 ]
 "all" = [
-    "apache-airflow[aiobotocore,amazon-aws-auth,apache-atlas,apache-webhdfs,async,cloudpickle,data.contracts,github-enterprise,google-auth,graphviz,gunicorn,kerberos,ldap,memray,otel,pandas,polars,rabbitmq,s3fs,sentry,statsd,uv]",
+    "apache-airflow[aiobotocore,amazon-aws-auth,apache-atlas,apache-webhdfs,async,cloudpickle,data.contracts,data.contracts.decorators,github-enterprise,google-auth,graphviz,gunicorn,kerberos,ldap,memray,otel,pandas,polars,rabbitmq,s3fs,sentry,statsd,uv]",
     "apache-airflow-core[all]",
     "apache-airflow-providers-airbyte>=5.0.0",
     "apache-airflow-providers-alibaba>=3.0.0",
@@ -430,6 +433,7 @@ apache-airflow = "airflow.__main__:main"
     "apache-airflow-providers-common-messaging>=2.0.0", # Set from MIN_VERSION_OVERRIDE in update_airflow_pyproject_toml.py
     "apache-airflow-providers-common-sql>=1.18.0",
     "apache-airflow-providers-data-contracts>=1.0.0", # Set from local provider pyproject.toml
+    "apache-airflow-providers-data-contracts-decorators>=1.0.0", # Set from local provider pyproject.toml
     "apache-airflow-providers-databricks>=6.11.0",
     "apache-airflow-providers-datadog>=3.8.0",
     "apache-airflow-providers-dbt-cloud>=3.11.0",
@@ -1118,6 +1122,8 @@ mypy_path = [
     "$MYPY_CONFIG_FILE_DIR/providers/common/sql/tests",
     "$MYPY_CONFIG_FILE_DIR/providers/data/contracts/src",
     "$MYPY_CONFIG_FILE_DIR/providers/data/contracts/tests",
+    "$MYPY_CONFIG_FILE_DIR/providers/data/contracts_decorators/src",
+    "$MYPY_CONFIG_FILE_DIR/providers/data/contracts_decorators/tests",
     "$MYPY_CONFIG_FILE_DIR/providers/databricks/src",
     "$MYPY_CONFIG_FILE_DIR/providers/databricks/tests",
     "$MYPY_CONFIG_FILE_DIR/providers/datadog/src",
@@ -1420,6 +1426,7 @@ apache-airflow-providers-common-io = { workspace = true }
 apache-airflow-providers-common-messaging = { workspace = true }
 apache-airflow-providers-common-sql = { workspace = true }
 apache-airflow-providers-data-contracts = { workspace = true }
+apache-airflow-providers-data-contracts-decorators = { workspace = true }
 apache-airflow-providers-databricks = { workspace = true }
 apache-airflow-providers-datadog = { workspace = true }
 apache-airflow-providers-dbt-cloud = { workspace = true }
@@ -1554,6 +1561,7 @@ members = [
     "providers/common/messaging",
     "providers/common/sql",
     "providers/data/contracts",
+    "providers/data/contracts_decorators",
     "providers/databricks",
     "providers/datadog",
     "providers/dbt/cloud",

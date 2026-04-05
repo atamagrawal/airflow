@@ -22,7 +22,9 @@ import pytest
 
 from airflow.providers.common.compat.sdk import AirflowException
 from airflow.providers.data.contracts.models.contract import DataContract, SchemaField
-from airflow.providers.data.contracts.operators.contract_validate import ContractValidateOperator
+from airflow.providers.data.contracts_decorators.decorators.contract_validate import (
+    _ContractValidateDecoratedOperator,
+)
 
 
 @pytest.fixture
@@ -40,21 +42,23 @@ def sample_contract() -> DataContract:
     )
 
 
-def test_contract_validate_operator_success(sample_contract):
-    op = ContractValidateOperator(
+def test_contract_validate_decorated_operator_success(sample_contract):
+    def load():
+        return {
+            "row_count": 5,
+            "schema": [{"name": "id", "type": "STRING", "nullable": False}],
+        }
+
+    op = _ContractValidateDecoratedOperator(
         task_id="validate",
+        python_callable=load,
         catalog_conn_id="datahub_default",
         dataset_urn="urn:x",
-        stats_xcom_task_id="load",
         validate_freshness=False,
         validate_sla=False,
         report_breach_to_catalog=False,
     )
     ti = MagicMock()
-    ti.xcom_pull.return_value = {
-        "row_count": 5,
-        "schema": [{"name": "id", "type": "STRING", "nullable": False}],
-    }
     dag = MagicMock()
     dag.dag_id = "dag1"
     context = {"ti": ti, "dag": dag, "run_id": "run1", "dag_run": None}
@@ -72,18 +76,20 @@ def test_contract_validate_operator_success(sample_contract):
     ti.xcom_push.assert_called_once()
 
 
-def test_contract_validate_operator_fails_on_schema(sample_contract):
-    op = ContractValidateOperator(
+def test_contract_validate_decorated_operator_fails_on_schema(sample_contract):
+    def load():
+        return {"row_count": 5, "schema": []}
+
+    op = _ContractValidateDecoratedOperator(
         task_id="validate",
+        python_callable=load,
         catalog_conn_id="datahub_default",
         dataset_urn="urn:x",
-        stats_xcom_task_id="load",
         validate_freshness=False,
         validate_sla=False,
         report_breach_to_catalog=False,
     )
     ti = MagicMock()
-    ti.xcom_pull.return_value = {"row_count": 5, "schema": []}
     dag = MagicMock()
     dag.dag_id = "dag1"
     context = {"ti": ti, "dag": dag, "run_id": "run1", "dag_run": None}

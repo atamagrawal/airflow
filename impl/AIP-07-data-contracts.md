@@ -19,9 +19,14 @@
 
 # AIP-07 — Data contracts provider (implementation notes)
 
-This document describes the **Phase 1** implementation in
-`apache-airflow-providers-data-contracts` (`providers/data/contracts/`).
+This document describes the **Phase 1** implementation split across:
+
+- **`apache-airflow-providers-data-contracts`** — `providers/data/contracts/` (operators, hooks, sensors, models, validators).
+- **`apache-airflow-providers-data-contracts-decorators`** — `providers/data/contracts_decorators/` (optional TaskFlow decorators on top of the standard provider).
+
 The normative design remains in `ideas/AIP-07-data-contract-provider.md`.
+
+Install the core provider for operators only; add the decorators package (or the Airflow extra `data.contracts.decorators`) when you want `@task.contract_*` helpers.
 
 ## Scope (implemented)
 
@@ -32,9 +37,13 @@ The normative design remains in `ideas/AIP-07-data-contract-provider.md`.
   - `YamlDataContractHook` (`conn_type=data_contract_yaml`) — **catalog-lite**: `extras.contracts` maps `dataset_urn` → YAML/JSON file path.
 - **Operators**: `ContractValidateOperator`, `ContractPublishOperator`, `ContractBreachGuardOperator`.
 - **Sensor**: `ContractReadySensor`.
+- **Shared runners** (core package, imported by operators and by decorators): `contract_validate_runner`, `contract_publish_runner`, `contract_breach_runner`, `contract_ready_runner` — keep validation/publish/breach/poke logic in one place.
+- **Task decorators** (decorators distribution only): registered as `@task.contract_validate`, `@task.contract_publish`, `@task.contract_breach_guard`, `@task.contract_ready`. Factories live under `airflow.providers.data.contracts_decorators.decorators` (`contract_validate_task`, `contract_publish_task`, `contract_breach_guard_task`, `contract_ready_task`). The contract-ready decorator calls your callable **each poke**; it must return the dataset URN string to check (use a constant function for a fixed URN).
 - **Deferred** (future phases / follow-up): metadata DB breach tables, UI panel, `airflow contracts` CLI, full GMS aspect writes for publish/breach, OpenMetadata/Atlan hooks, `SchemaEvolutionOperator`, `SchemaMatchSensor`.
 
 ## Package layout
+
+### Core (`providers/data/contracts/`)
 
 ```text
 providers/data/contracts/
@@ -45,9 +54,38 @@ providers/data/contracts/
 │   ├── validators/
 │   ├── hooks/
 │   ├── operators/
-│   └── sensors/
+│   ├── sensors/
+│   ├── contract_validate_runner.py
+│   ├── contract_publish_runner.py
+│   ├── contract_breach_runner.py
+│   └── contract_ready_runner.py
 └── tests/unit/data/contracts/
 ```
+
+### Decorators (`providers/data/contracts_decorators/`)
+
+```text
+providers/data/contracts_decorators/
+├── provider.yaml
+├── pyproject.toml
+├── src/airflow/providers/data/contracts_decorators/
+│   ├── decorators/
+│   │   ├── contract_validate.py
+│   │   ├── contract_publish.py
+│   │   ├── contract_breach_guard.py
+│   │   ├── contract_ready.py
+│   │   └── _python_operator_execute.py
+│   └── get_provider_info.py
+└── tests/unit/data/contracts_decorators/
+```
+
+## Examples (repo)
+
+| Path | What it shows |
+|------|----------------|
+| `example/aip-07/minimal_standalone/` | Minimal validation with `ContractValidateOperator` + local YAML (`contract_yaml_path`). |
+| `example/aip-07/minimal_decorators/` | Same minimal scenario with TaskFlow decorators; publish/consumer DAGs need a `data_contract_yaml` connection. |
+| `example/aip-07/example1/` | Postgres producer/consumer with operators, SQL, and YAML catalog connection. |
 
 ## Connections
 
@@ -101,6 +139,15 @@ Paths in `contracts` may be absolute or relative to `contracts_base_dir` / conne
 
 `ContractValidateOperator` supports `contract_yaml_path` to bypass the catalog and load a file directly (still uses `catalog_conn_id` for breach reporting when enabled).
 
+### TaskFlow decorators (optional package)
+
+Equivalent patterns using `apache-airflow-providers-data-contracts-decorators`:
+
+- **Validate** — `contract_validate_task`: decorated callable returns the stats `dict` (combines “build stats” + validate in one task). Supports the same parameters as `ContractValidateOperator` (including `contract_yaml_path`).
+- **Publish** — `contract_publish_task`: callable returns stats; operator always uses the catalog hook (configure `data_contract_yaml` or DataHub).
+- **Breach guard** — `contract_breach_guard_task`: callable returns `list[str]` URNs to check.
+- **Ready** — `contract_ready_task`: callable returns the dataset URN `str` for each poke (unlike `ContractReadySensor`, which takes a static `dataset_urn`).
+
 ### Consumer: wait then guard
 
 1. `ContractReadySensor` waits until status is `ACTIVE` and, if `min_update_time` is set, until `last_validated_at` is at least that timestamp (requires `last_validated_at` on the contract).
@@ -111,6 +158,7 @@ Paths in `contracts` may be absolute or relative to `contracts_base_dir` / conne
 
 ```bash
 uv run --project providers/data/contracts pytest providers/data/contracts/tests/unit/data/contracts -xvs
+uv run --project providers/data/contracts_decorators pytest providers/data/contracts_decorators/tests/unit/data/contracts_decorators -xvs
 ```
 
 After changing `provider.yaml` dependencies or adding the provider to the workspace, run the repository scripts that refresh generated metadata (see `generated/README.md` and `contributing-docs/12_provider_distributions.rst`).

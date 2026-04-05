@@ -19,9 +19,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
-from airflow.models import Variable
-from airflow.providers.common.compat.sdk import AirflowException, AirflowSkipException, BaseOperator
-from airflow.providers.data.contracts.hooks.base_catalog import get_catalog_hook
+from airflow.providers.common.compat.sdk import BaseOperator
+from airflow.providers.data.contracts.contract_breach_runner import run_contract_breach_guard
 
 if TYPE_CHECKING:
     from airflow.providers.common.compat.sdk import Context
@@ -34,6 +33,9 @@ class ContractBreachGuardOperator(BaseOperator):
     Consumer-side gate: ensure upstream datasets are not in ``BREACHED`` status.
 
     Set Airflow Variable ``override_var`` to ``true`` / ``1`` / ``yes`` for a break-glass bypass.
+
+    For TaskFlow-style DAGs, install ``apache-airflow-providers-data-contracts-decorators`` and use
+    :func:`~airflow.providers.data.contracts_decorators.decorators.contract_breach_guard.contract_breach_guard_task`.
     """
 
     template_fields: Sequence[str] = ("dataset_urns",)
@@ -54,25 +56,10 @@ class ContractBreachGuardOperator(BaseOperator):
         self.override_var = override_var
 
     def execute(self, context: Context) -> None:
-        if self.override_var:
-            flag = Variable.get(self.override_var, default_var="0").lower()
-            if flag in {"1", "true", "yes", "on"}:
-                self.log.info("Contract guard bypassed via Variable %s", self.override_var)
-                return
-
-        hook = get_catalog_hook(catalog_conn_id=self.catalog_conn_id)
-        breached: list[str] = []
-        for urn in self.dataset_urns:
-            status = hook.get_contract_status(urn)
-            if status.upper() == "BREACHED":
-                breached.append(urn)
-
-        if not breached:
-            return
-
-        msg = "Upstream contract breach for: " + ", ".join(breached)
-        if self.on_breach == "fail":
-            raise AirflowException(msg)
-        if self.on_breach == "skip":
-            raise AirflowSkipException(msg)
-        self.log.warning(msg)
+        run_contract_breach_guard(
+            catalog_conn_id=self.catalog_conn_id,
+            dataset_urns=self.dataset_urns,
+            on_breach=self.on_breach,
+            override_var=self.override_var,
+            log=self.log,
+        )
