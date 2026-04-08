@@ -32,4 +32,9 @@ schema:
 
 min_row_count: 1
 
+# Optional: who may manually trigger DAG runs that use ContractTriggerUserGuard (DagRun.triggering_user_name).
+allowed_trigger_users:
+  - alice
+  - data_eng_service
+
 schema_compatibility: BACKWARD

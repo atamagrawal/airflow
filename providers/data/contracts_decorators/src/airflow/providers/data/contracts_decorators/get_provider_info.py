@@ -59,5 +59,12 @@ def get_provider_info():
                 ),
                 "name": "contract_ready",
             },
+            {
+                "class-name": (
+                    "airflow.providers.data.contracts_decorators.decorators.contract_trigger_user_guard."
+                    "contract_trigger_user_guard_task"
+                ),
+                "name": "contract_trigger_user_guard",
+            },
         ],
     }

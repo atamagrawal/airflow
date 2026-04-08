@@ -23,9 +23,11 @@ provider for catalog-backed data contract validation (AIP-07).
 
 Python import path: ``airflow.providers.data.contracts``.
 
-Operators, hooks, sensors, and shared runner modules live in this package. TaskFlow decorators
+Operators, hooks, sensors, and shared runner modules live in this package. Contract YAML may list
+``allowed_trigger_users`` for ``ContractTriggerUserGuardOperator`` (via ``contract_yaml_path``) and
+the decorators distribution helpers. TaskFlow decorators
 (``@task.contract_validate``, ``@task.contract_publish``, ``@task.contract_breach_guard``,
-``@task.contract_ready``) live in the sibling distribution
+``@task.contract_ready``, ``@task.contract_trigger_user_guard``) live in the sibling distribution
 ``apache-airflow-providers-data-contracts-decorators`` (import root
 ``airflow.providers.data.contracts_decorators``).
 

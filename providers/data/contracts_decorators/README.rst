@@ -28,6 +28,8 @@ Registered names and Python factories:
 * ``@task.contract_publish`` — ``contract_publish_task`` — callable returns stats for lineage / status update.
 * ``@task.contract_breach_guard`` — ``contract_breach_guard_task`` — callable returns ``list[str]`` dataset URNs.
 * ``@task.contract_ready`` — ``contract_ready_task`` — **each poke** invokes the callable; it must return the dataset URN ``str`` to check (constant lambda for a fixed URN).
+* ``@task.contract_trigger_user_guard`` — ``contract_trigger_user_guard_task`` — either pass ``contract_yaml_path`` (allow-list in YAML key ``allowed_trigger_users``) and use the callable as normal task code, **or** omit it and return ``list[str]`` from the callable.
+* ``with_contract_trigger_user_from_yaml`` — stack under ``@task`` so any task body runs after the same YAML allow-list check (Jinja on the path is supported).
 
 Import from ``airflow.providers.data.contracts_decorators.decorators``.
 

@@ -34,12 +34,15 @@ schema:
     type: STRING
     nullable: false
 min_row_count: 1
+allowed_trigger_users:
+  - ops
 """,
         encoding="utf-8",
     )
     dc = YamlDataContractHook.load_contract_from_file(p)
     assert dc.dataset_name == "orders"
     assert dc.schema[0].name == "id"
+    assert dc.allowed_trigger_users == ["ops"]
 
 
 @patch.object(YamlDataContractHook, "get_connection")

@@ -30,7 +30,8 @@ example/aip-07/minimal_decorators/
 ├── dags/
 │   ├── simple_data_contract_decorators.py           # Validate (no catalog connection)
 │   ├── simple_data_contract_publish_decorators.py   # Publish stub (needs YAML connection)
-│   └── simple_data_contract_consumer_decorators.py  # Ready sensor + breach guard
+│   ├── simple_data_contract_consumer_decorators.py  # Ready sensor + breach guard
+│   └── simple_trigger_user_guard_decorators.py      # Allow-list for DagRun.triggering_user_name
 └── README.md
 ```
 
@@ -40,6 +41,15 @@ example/aip-07/minimal_decorators/
 * ``apache-airflow-providers-data-contracts-decorators`` (pulls **standard** provider transitively)
 
 Or: ``pip install 'apache-airflow[data.contracts.decorators]'`` from a release that lists this extra.
+
+## DAG: trigger user guard
+
+``simple_trigger_user_guard_decorators.py`` — allow-list comes from ``allowed_trigger_users`` in
+``contracts/sample_dataset.yaml``. The DAG shows both **``with_contract_trigger_user_from_yaml``**
+(stacked under ``@task`` so any task body can be guarded) and **``contract_trigger_user_guard_task``
+with ``contract_yaml_path``** (one decorated operator). Manual triggers from the UI/REST/CLI usually
+populate ``triggering_user_name``; **scheduled runs** often do not—examples use ``when_triggering_user_missing="allow"``.
+The operator-only equivalent is ``example/aip-07/minimal_standalone/dags/simple_trigger_user_guard.py``.
 
 ## DAG: validation only
 

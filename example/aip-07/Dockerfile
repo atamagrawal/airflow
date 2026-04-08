@@ -18,11 +18,12 @@
 # This is an example Dockerfile for local testing. It is not intended for production use.
 #
 # Option B: extend the official Airflow image with the in-repo **data contracts** provider
-# (``apache-airflow-providers-data-contracts``), which is not on PyPI while the provider is incubating.
+# and **data contracts decorators** package (TaskFlow annotations), which are not on PyPI
+# while these providers are incubating.
 #
 # Build from the **repository root** (the directory that contains ``providers/``):
 #
-#   docker build -f example/aip-07/example1/Dockerfile -t airflow-aip07-data-contracts:latest .
+#   docker build -f example/aip-07/Dockerfile -t airflow-aip07-data-contracts:latest .
 #
 # Tag and push to Docker Hub (repository ``atamagrawal/airflow``; pick your own tag):
 #
@@ -55,13 +56,20 @@ ENV AIRFLOW_VERSION=${AIRFLOW_VERSION}
 USER root
 
 COPY providers/data/contracts /tmp/apache-airflow-providers-data-contracts
+COPY providers/data/contracts_decorators /tmp/apache-airflow-providers-data-contracts-decorators
 
 # COPY is root-owned; the airflow user cannot ``rm`` that tree afterward unless we chown first.
 RUN chown -R airflow:root /tmp/apache-airflow-providers-data-contracts
+RUN chown -R airflow:root /tmp/apache-airflow-providers-data-contracts-decorators
 
 USER airflow
 
+# Data-contracts decorators import ``determine_kwargs`` from common-compat's sdk shim (added in 1.14.1).
+# The base Airflow image can still ship 1.14.0, which breaks DAG parse — pin high enough here.
 RUN pip install --no-cache-dir \
     "apache-airflow==${AIRFLOW_VERSION}" \
+    "apache-airflow-providers-common-compat>=1.14.1" \
     /tmp/apache-airflow-providers-data-contracts \
-    && rm -rf /tmp/apache-airflow-providers-data-contracts
+    /tmp/apache-airflow-providers-data-contracts-decorators \
+    && rm -rf /tmp/apache-airflow-providers-data-contracts \
+        /tmp/apache-airflow-providers-data-contracts-decorators

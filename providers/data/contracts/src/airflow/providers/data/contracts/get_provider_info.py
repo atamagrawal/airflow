@@ -38,6 +38,7 @@ def get_provider_info():
                     "airflow.providers.data.contracts.operators.contract_validate",
                     "airflow.providers.data.contracts.operators.contract_publish",
                     "airflow.providers.data.contracts.operators.contract_breach_guard",
+                    "airflow.providers.data.contracts.operators.contract_trigger_user_guard",
                 ],
             }
         ],

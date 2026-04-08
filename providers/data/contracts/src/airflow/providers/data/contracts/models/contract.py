@@ -73,6 +73,7 @@ class DataContract:
     last_validated_at: datetime | None = None
     last_breach_at: datetime | None = None
     tags: list[str] = field(default_factory=list)
+    allowed_trigger_users: list[str] | None = None
 
     def get_schema_field(self, name: str) -> SchemaField | None:
         for f in self.schema:
@@ -154,7 +155,23 @@ def data_contract_from_mapping(data: dict[str, Any], *, catalog_url: str = "") -
         last_validated_at=parse_optional_iso_datetime(data.get("last_validated_at")),
         last_breach_at=parse_optional_iso_datetime(data.get("last_breach_at")),
         tags=list(data.get("tags") or []),
+        allowed_trigger_users=_parse_allowed_trigger_users(data.get("allowed_trigger_users")),
     )
+
+
+def _parse_allowed_trigger_users(raw: Any) -> list[str] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        msg = "allowed_trigger_users must be a list of strings when present"
+        raise ValueError(msg)
+    out: list[str] = []
+    for x in raw:
+        if not isinstance(x, str):
+            msg = "allowed_trigger_users must contain only strings"
+            raise ValueError(msg)
+        out.append(x)
+    return out
 
 
 def parse_optional_iso_datetime(value: Any) -> datetime | None:
