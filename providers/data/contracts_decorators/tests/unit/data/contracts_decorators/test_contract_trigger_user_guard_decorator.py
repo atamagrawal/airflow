@@ -20,67 +20,33 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from airflow.providers.data.contracts.hooks.local_yaml import YamlDataContractHook
 from airflow.providers.data.contracts_decorators.decorators.contract_trigger_user_guard import (
     _ContractTriggerUserGuardDecoratedOperator,
+    contract_trigger_user_guard,
 )
 
 
-def test_contract_trigger_user_guard_decorated_accepts():
-    def allowed():
-        return ["alice"]
-
-    op = _ContractTriggerUserGuardDecoratedOperator(
-        task_id="t",
-        python_callable=allowed,
-        when_triggering_user_missing="allow",
-    )
-    dr = MagicMock()
-    dr.triggering_user_name = "alice"
-    dag = MagicMock()
-    dag.dag_id = "d1"
-    op.execute({"dag_run": dr, "dag": dag, "ti": MagicMock()})
-
-
-def test_contract_trigger_user_guard_yaml_mode_returns_callable_result(tmp_path):
-    p = tmp_path / "c.yaml"
-    p.write_text(
-        "dataset_urn: urn:t\n"
-        "dataset_name: t\nversion: 1\nstatus: ACTIVE\nschema: []\n"
-        "allowed_trigger_users:\n  - alice\n",
-        encoding="utf-8",
-    )
-
+def test_contract_trigger_user_guard_decorated_accepts_inline_allowlist():
     def body():
-        return "done"
+        return "ok"
 
     op = _ContractTriggerUserGuardDecoratedOperator(
         task_id="t",
         python_callable=body,
-        contract_yaml_path=str(p),
+        allowed_users=["alice"],
         when_triggering_user_missing="allow",
     )
     dr = MagicMock()
     dr.triggering_user_name = "alice"
     dag = MagicMock()
     dag.dag_id = "d1"
-    assert op.execute({"dag_run": dr, "dag": dag, "ti": MagicMock()}) == "done"
+    assert op.execute({"dag_run": dr, "dag": dag, "ti": MagicMock()}) == "ok"
 
 
-def test_with_contract_trigger_user_from_yaml_runs_wrapped_fn(tmp_path):
-    from airflow.providers.data.contracts_decorators.decorators.with_contract_trigger_user_from_yaml import (
-        with_contract_trigger_user_from_yaml,
-    )
-
-    p = tmp_path / "c.yaml"
-    p.write_text(
-        "dataset_urn: urn:t\n"
-        "dataset_name: t\nversion: 1\nstatus: ACTIVE\nschema: []\n"
-        "allowed_trigger_users:\n  - alice\n",
-        encoding="utf-8",
-    )
-
+def test_contract_trigger_user_guard_stackable_runs_guard_then_body():
     mock_task = MagicMock()
-    mock_task.render_template.side_effect = lambda path, *a, **k: path
+    mock_task.render_template.side_effect = lambda v, *a, **k: v
     mock_task.get_template_env.return_value = MagicMock()
     mock_task.log = MagicMock()
     dr = MagicMock()
@@ -89,7 +55,7 @@ def test_with_contract_trigger_user_from_yaml_runs_wrapped_fn(tmp_path):
     dag.dag_id = "d1"
     ctx = {"task": mock_task, "dag": dag, "dag_run": dr}
 
-    @with_contract_trigger_user_from_yaml(str(p))
+    @contract_trigger_user_guard(allowed_users=["alice"])
     def inner():
         return 42
 
@@ -97,13 +63,52 @@ def test_with_contract_trigger_user_from_yaml_runs_wrapped_fn(tmp_path):
         assert inner() == 42
 
 
-def test_contract_trigger_user_guard_empty_contract_yaml_path_invalid():
+@patch("airflow.providers.data.contracts.contract_validate_runner.load_contract_for_validation")
+def test_contract_trigger_user_guard_stackable_dataset_urn_uses_default_catalog(mock_load):
+    mock_contract = MagicMock()
+    mock_contract.allowed_trigger_users = ["alice"]
+    mock_load.return_value = mock_contract
+
+    mock_task = MagicMock()
+    mock_task.render_template.side_effect = lambda v, *a, **k: v
+    mock_task.get_template_env.return_value = MagicMock()
+    mock_task.log = MagicMock()
+    dr = MagicMock()
+    dr.triggering_user_name = "alice"
+    dag = MagicMock()
+    dag.dag_id = "d1"
+    ctx = {"task": mock_task, "dag": dag, "dag_run": dr}
+
+    @contract_trigger_user_guard(
+        dataset_urn="urn:test:t",
+        when_triggering_user_missing="allow",
+        on_unauthorized="fail",
+    )
+    def inner():
+        return "done"
+
+    with patch("airflow.sdk.get_current_context", return_value=ctx):
+        assert inner() == "done"
+
+    mock_load.assert_called_once()
+    assert mock_load.call_args.kwargs["catalog_conn_id"] == YamlDataContractHook.default_conn_name
+    assert mock_load.call_args.kwargs["contract_yaml_path"] is None
+    assert mock_load.call_args.kwargs["dataset_urn"] == "urn:test:t"
+
+
+def test_contract_trigger_user_guard_invalid_missing_dataset_urn():
     def body():
         return 1
 
-    with pytest.raises(ValueError, match="contract_yaml_path"):
+    with pytest.raises(ValueError, match="dataset_urn is required"):
         _ContractTriggerUserGuardDecoratedOperator(
             task_id="t",
             python_callable=body,
-            contract_yaml_path="",
         )
+
+
+def test_contract_trigger_user_guard_rejects_catalog_overrides():
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        contract_trigger_user_guard(dataset_urn="urn:x", contract_yaml_path="/tmp/x.yaml")
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        contract_trigger_user_guard(dataset_urn="urn:x", catalog_conn_id="foo")

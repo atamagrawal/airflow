@@ -16,53 +16,46 @@
 # under the License.
 
 """
-Trigger-user guard from **contract YAML** (``allowed_trigger_users``), stackable on any ``@task``.
+Trigger-user guard using ``allowed_trigger_users`` from the **platform catalog**.
 
-* **Recommended:** ``with_contract_trigger_user_from_yaml`` directly under ``@task`` so your
-  callable is normal task code and the allow-list stays in ``contracts/sample_dataset.yaml``.
-* **Alternative:** ``contract_trigger_user_guard_task(contract_yaml_path=...)`` — same YAML
-  field; the decorated function is the task body after the guard runs inside one operator.
+DAG authors pass **``dataset_urn``** only. Your platform (or product) must provision the default
+``data_contract_yaml`` Airflow connection (``data_contract_yaml_default``) with
+``extras.contracts`` mapping that URN to the contract YAML — the same pattern as contract
+validation. Customers do not configure file paths in the DAG.
 
-Requires:
+This example uses ``urn:example:sample_dataset``; see ``contracts/sample_dataset.yaml`` for the
+file the connection should point at.
 
-* ``apache-airflow-providers-data-contracts``
-* ``apache-airflow-providers-data-contracts-decorators``
+This DAG uses the stacked style: plain ``@task`` outer with inner
+``@contract_trigger_user_guard``.
+
+Requires ``apache-airflow-providers-data-contracts`` and
+``apache-airflow-providers-data-contracts-decorators``.
 
 Operator-only equivalent: ``example/aip-07/minimal_standalone/dags/simple_trigger_user_guard.py``.
 """
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 
 from airflow.providers.data.contracts_decorators.decorators.contract_trigger_user_guard import (
-    contract_trigger_user_guard_task,
-)
-from airflow.providers.data.contracts_decorators.decorators.with_contract_trigger_user_from_yaml import (
-    with_contract_trigger_user_from_yaml,
+    contract_trigger_user_guard,
 )
 from airflow.sdk import DAG, task
 
-_EXAMPLE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONTRACT_YAML = os.path.join(_EXAMPLE_ROOT, "contracts", "sample_dataset.yaml")
+# Declared by the product / catalog for this dataset — not a path customers edit in DAG code.
+SAMPLE_DATASET_URN = "urn:example:sample_dataset"
 
 
 @task
-@with_contract_trigger_user_from_yaml(CONTRACT_YAML)
-def workload_with_stacked_guard() -> str:
-    """Return a marker; the YAML allow-list is enforced before this body runs."""
-    return "ok"
-
-
-@contract_trigger_user_guard_task(
-    task_id="single_operator_body",
-    contract_yaml_path=CONTRACT_YAML,
+@contract_trigger_user_guard(
+    dataset_urn=SAMPLE_DATASET_URN,
     when_triggering_user_missing="allow",
     on_unauthorized="fail",
 )
-def workload_as_single_decorated_task() -> str:
-    """Return a marker using the same YAML policy as ``workload_with_stacked_guard``."""
+def protected_workload() -> str:
+    """Run only if ``DagRun.triggering_user_name`` is allowed for this dataset contract."""
     return "ok"
 
 
@@ -74,5 +67,4 @@ with DAG(
     tags=["data-contracts", "example", "minimal", "decorators", "trigger-user"],
     doc_md=__doc__,
 ) as _:
-    workload_with_stacked_guard()
-    workload_as_single_decorated_task()
+    protected_workload()

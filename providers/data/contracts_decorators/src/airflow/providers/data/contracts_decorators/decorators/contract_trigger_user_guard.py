@@ -16,42 +16,100 @@
 # under the License.
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from airflow.providers.common.compat.sdk import task_decorator_factory
 from airflow.providers.data.contracts.contract_trigger_user_runner import (
-    allowed_trigger_users_from_contract_file,
-    run_trigger_user_guard,
+    OnUnauthorized,
+    WhenTriggeringUserMissing,
+    resolve_allowed_trigger_users_for_execution,
+    run_trigger_user_guard_for_context,
+    validate_trigger_user_guard_params,
 )
 from airflow.providers.data.contracts_decorators.decorators._python_operator_execute import (
     bind_python_decorated_callable,
+    log_python_callable_return_value,
+)
+from airflow.providers.data.contracts_decorators.decorators._stackable_under_task import (
+    current_task_context_and_renderer,
 )
 from airflow.providers.standard.decorators.python import _PythonDecoratedOperator
 
 if TYPE_CHECKING:
     from airflow.providers.common.compat.sdk import Context, TaskDecorator
 
-WhenTriggeringUserMissing = Literal["allow", "fail", "skip"]
-OnUnauthorized = Literal["fail", "skip", "warn", "pause_dag"]
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def contract_trigger_user_guard(
+    *,
+    allowed_users: list[str] | None = None,
+    dataset_urn: str | None = None,
+    case_insensitive: bool = True,
+    when_triggering_user_missing: WhenTriggeringUserMissing = "allow",
+    on_unauthorized: OnUnauthorized = "fail",
+) -> Callable[[F], F]:
+    """
+    Wrap task body callables so the trigger-user guard runs first when stacked **under** ``@task``.
+
+    Apply **bottom-up** (this decorator directly on the function, ``@task`` outer)::
+
+        @task
+        @contract_trigger_user_guard(dataset_urn="urn:example:my_dataset")
+        def my_task():
+            return 1
+
+    Template fields (``dataset_urn``) are rendered with the outer task's Jinja env.
+    """
+    validate_trigger_user_guard_params(
+        allowed_users=allowed_users,
+        contract_yaml_path=None,
+        catalog_conn_id=None,
+        dataset_urn=dataset_urn,
+    )
+
+    def decorator(f: F) -> F:
+        @functools.wraps(f)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            ctx, render = current_task_context_and_renderer()
+            task = ctx["task"]
+            r_allowed = render(allowed_users) if allowed_users is not None else None
+            r_urn = render(dataset_urn) if dataset_urn is not None else None
+
+            allowed_list = resolve_allowed_trigger_users_for_execution(
+                allowed_users=r_allowed,
+                contract_yaml_path=None,
+                catalog_conn_id=None,
+                dataset_urn=r_urn,
+            )
+            run_trigger_user_guard_for_context(
+                ctx,
+                allowed_users=allowed_list,
+                case_insensitive=case_insensitive,
+                when_triggering_user_missing=when_triggering_user_missing,
+                on_unauthorized=on_unauthorized,
+                log=task.log,
+            )
+            return f(*args, **kwargs)
+
+        return wrapper  # type: ignore[return-value]
+
+    return decorator
 
 
 class _ContractTriggerUserGuardDecoratedOperator(_PythonDecoratedOperator):
     """
-    Enforce triggering-user policy from an allow-list or from contract YAML.
+    TaskFlow counterpart to :class:`~airflow.providers.data.contracts.operators.contract_trigger_user_guard.ContractTriggerUserGuardOperator`.
 
-    Same role as
-    :class:`~airflow.providers.data.contracts.operators.contract_trigger_user_guard.ContractTriggerUserGuardOperator`.
-
-    * If ``contract_yaml_path`` is set, the decorated callable is the task body; allow-list
-      comes from ``allowed_trigger_users`` in that file.
-    * Otherwise the callable must return a non-empty ``list[str]`` of allowed users (guard-only
-      task).
+    After the guard passes, the decorated callable runs as usual and its return value is kept.
     """
 
     template_fields: Sequence[str] = (
         *_PythonDecoratedOperator.template_fields,
-        "contract_yaml_path",
+        "allowed_users",
+        "dataset_urn",
     )
     custom_operator_name: str = "@task.contract_trigger_user_guard"
 
@@ -59,7 +117,8 @@ class _ContractTriggerUserGuardDecoratedOperator(_PythonDecoratedOperator):
         self,
         *,
         python_callable: Callable,
-        contract_yaml_path: str | None = None,
+        allowed_users: list[str] | None = None,
+        dataset_urn: str | None = None,
         case_insensitive: bool = True,
         when_triggering_user_missing: WhenTriggeringUserMissing = "allow",
         on_unauthorized: OnUnauthorized = "fail",
@@ -67,10 +126,14 @@ class _ContractTriggerUserGuardDecoratedOperator(_PythonDecoratedOperator):
         op_kwargs: Any = None,
         **kwargs,
     ) -> None:
-        if contract_yaml_path is not None and not str(contract_yaml_path).strip():
-            msg = "contract_yaml_path must be a non-empty string when set"
-            raise ValueError(msg)
-        self.contract_yaml_path = contract_yaml_path
+        validate_trigger_user_guard_params(
+            allowed_users=allowed_users,
+            contract_yaml_path=None,
+            catalog_conn_id=None,
+            dataset_urn=dataset_urn,
+        )
+        self.allowed_users = allowed_users
+        self.dataset_urn = dataset_urn
         self.case_insensitive = case_insensitive
         self.when_triggering_user_missing = when_triggering_user_missing
         self.on_unauthorized = on_unauthorized
@@ -88,70 +151,67 @@ class _ContractTriggerUserGuardDecoratedOperator(_PythonDecoratedOperator):
 
         bind_python_decorated_callable(self, context)
 
-        if self.contract_yaml_path:
-            allowed = allowed_trigger_users_from_contract_file(str(self.contract_yaml_path))
-            dr = context.get("dag_run")
-            triggering_user_name = getattr(dr, "triggering_user_name", None) if dr else None
-            run_trigger_user_guard(
-                dag_id=context["dag"].dag_id,
-                triggering_user_name=triggering_user_name,
-                allowed_users=allowed,
-                case_insensitive=self.case_insensitive,
-                when_triggering_user_missing=self.when_triggering_user_missing,
-                on_unauthorized=self.on_unauthorized,
-                log=self.log,
-            )
-            result = self.execute_callable()
-            if self.show_return_value_in_logs:
-                self.log.info("Done. Returned value was: %s", result)
-            else:
-                self.log.info("Done. Returned value not shown")
-            return result
-
-        allowed = self.execute_callable()
-        if self.show_return_value_in_logs:
-            self.log.info("Done. Returned value was: %s", allowed)
-        else:
-            self.log.info("Done. Returned value not shown")
-
-        if not isinstance(allowed, list) or not allowed or not all(isinstance(u, str) for u in allowed):
-            msg = f"Callable must return a non-empty list[str] of allowed users, got {type(allowed).__name__}"
-            raise TypeError(msg)
-
-        dr = context.get("dag_run")
-        triggering_user_name = getattr(dr, "triggering_user_name", None) if dr else None
-        run_trigger_user_guard(
-            dag_id=context["dag"].dag_id,
-            triggering_user_name=triggering_user_name,
-            allowed_users=list(allowed),
+        allowed_list = resolve_allowed_trigger_users_for_execution(
+            allowed_users=self.allowed_users,
+            contract_yaml_path=None,
+            catalog_conn_id=None,
+            dataset_urn=self.dataset_urn,
+        )
+        run_trigger_user_guard_for_context(
+            context,
+            allowed_users=allowed_list,
             case_insensitive=self.case_insensitive,
             when_triggering_user_missing=self.when_triggering_user_missing,
             on_unauthorized=self.on_unauthorized,
             log=self.log,
         )
-        return None
+
+        result = self.execute_callable()
+        log_python_callable_return_value(
+            self.log,
+            result,
+            show_return_value=self.show_return_value_in_logs,
+        )
+        return result
 
 
 def contract_trigger_user_guard_task(
     python_callable: Callable | None = None,
     *,
     multiple_outputs: bool | None = None,
+    allowed_users: list[str] | None = None,
+    dataset_urn: str | None = None,
+    case_insensitive: bool = True,
+    when_triggering_user_missing: WhenTriggeringUserMissing = "allow",
+    on_unauthorized: OnUnauthorized = "fail",
     **kwargs,
 ) -> TaskDecorator:
     """
-    Enforce ``DagRun.triggering_user_name`` against an allow-list.
+    Restrict manual/API/UI triggers using ``DagRun.triggering_user_name`` (same rules as the operator).
 
-    Without ``contract_yaml_path``, the callable must return ``list[str]`` (allowed user names).
+    Use this factory like ``@task.contract_trigger_user_guard`` — one TaskFlow operator runs the guard,
+    then your callable. ``task_id`` defaults to the function name (same as ``@task``).
 
-    With ``contract_yaml_path``, the file must define ``allowed_trigger_users`` and the callable
-    is normal task code whose return value is passed through (use ``with_contract_trigger_user_from_yaml``
-    to stack the check on a plain ``@task`` instead).
+    To combine a plain ``@task`` with a separate guard, stack :func:`contract_trigger_user_guard` on the
+    callable (**bottom-up**: inner ``@contract_trigger_user_guard``, outer ``@task``).
+
+    Typical DAG code sets **``dataset_urn``** only; the platform supplies the default YAML catalog
+    connection. Use **``allowed_users``** for a self-contained list.
     """
+    guard_kwargs = dict(
+        allowed_users=allowed_users,
+        dataset_urn=dataset_urn,
+        case_insensitive=case_insensitive,
+        when_triggering_user_missing=when_triggering_user_missing,
+        on_unauthorized=on_unauthorized,
+    )
+
     if multiple_outputs:
         raise ValueError("multiple_outputs is not supported for @task.contract_trigger_user_guard")
+    merged = {**guard_kwargs, **kwargs}
     return task_decorator_factory(
         python_callable=python_callable,
         multiple_outputs=multiple_outputs,
         decorated_operator_class=_ContractTriggerUserGuardDecoratedOperator,
-        **kwargs,
+        **merged,
     )

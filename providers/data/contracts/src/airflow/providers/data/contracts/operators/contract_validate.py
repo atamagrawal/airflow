@@ -20,7 +20,10 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 from airflow.providers.common.compat.sdk import BaseOperator
-from airflow.providers.data.contracts.contract_validate_runner import validate_contract_stats
+from airflow.providers.data.contracts.contract_validate_runner import (
+    require_catalog_conn_or_contract_yaml,
+    validate_contract_stats,
+)
 
 if TYPE_CHECKING:
     from airflow.providers.common.compat.sdk import Context
@@ -31,6 +34,11 @@ OnViolation = Literal["fail", "warn"]
 class ContractValidateOperator(BaseOperator):
     """
     Fetch a data contract and validate task output statistics from XCom.
+
+    Provide **``catalog_conn_id``** and/or **``contract_yaml_path``**. When the connection is omitted,
+    the contract is loaded from the YAML/JSON file via :class:`~airflow.providers.data.contracts.hooks.local_yaml.YamlDataContractHook`
+    (``dataset_urn`` must match the file's ``dataset_urn``). When both are set, the file path takes
+    precedence for loading.
 
     Stats mapping (pulled from XCom) commonly includes:
 
@@ -43,6 +51,7 @@ class ContractValidateOperator(BaseOperator):
     """
 
     template_fields: Sequence[str] = (
+        "catalog_conn_id",
         "dataset_urn",
         "contract_yaml_path",
         "stats_xcom_task_id",
@@ -52,9 +61,9 @@ class ContractValidateOperator(BaseOperator):
     def __init__(
         self,
         *,
-        catalog_conn_id: str,
         dataset_urn: str,
         stats_xcom_task_id: str,
+        catalog_conn_id: str | None = None,
         stats_xcom_key: str = "return_value",
         contract_yaml_path: str | None = None,
         validate_schema: bool = True,
@@ -70,6 +79,10 @@ class ContractValidateOperator(BaseOperator):
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
+        require_catalog_conn_or_contract_yaml(
+            catalog_conn_id=catalog_conn_id,
+            contract_yaml_path=contract_yaml_path,
+        )
         self.catalog_conn_id = catalog_conn_id
         self.dataset_urn = dataset_urn
         self.stats_xcom_task_id = stats_xcom_task_id

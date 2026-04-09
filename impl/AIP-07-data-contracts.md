@@ -35,10 +35,10 @@ Install the core provider for operators only; add the decorators package (or the
 - **Hooks**:
   - `DataHubCatalogHook` (`conn_type=datahub`) — reads dataset entities via DataHub OpenAPI v3; optional embedded contract JSON in `customProperties.airflow_data_contract`; otherwise derives a minimal contract from `schemaMetadata` + numeric custom properties.
   - `YamlDataContractHook` (`conn_type=data_contract_yaml`) — **catalog-lite**: `extras.contracts` maps `dataset_urn` → YAML/JSON file path.
-- **Operators**: `ContractValidateOperator`, `ContractPublishOperator`, `ContractBreachGuardOperator`, `ContractTriggerUserGuardOperator` (allow-list for `DagRun.triggering_user_name` from Python or from contract YAML key `allowed_trigger_users`; optional DAG pause on violation).
+- **Operators**: `ContractValidateOperator`, `ContractPublishOperator`, `ContractBreachGuardOperator`, `ContractTriggerUserGuardOperator` (allow-list for `DagRun.triggering_user_name` from inline `allowed_users` or from a contract's `allowed_trigger_users` resolved by `dataset_urn` via the platform-managed default YAML catalog connection; optional DAG pause on violation).
 - **Sensor**: `ContractReadySensor`.
 - **Shared runners** (core package, imported by operators and by decorators): `contract_validate_runner`, `contract_publish_runner`, `contract_breach_runner`, `contract_ready_runner` — keep validation/publish/breach/poke logic in one place.
-- **Task decorators** (decorators distribution only): registered as `@task.contract_validate`, `@task.contract_publish`, `@task.contract_breach_guard`, `@task.contract_ready`, `@task.contract_trigger_user_guard`. Factories live under `airflow.providers.data.contracts_decorators.decorators` (`contract_validate_task`, `contract_publish_task`, `contract_breach_guard_task`, `contract_ready_task`, `contract_trigger_user_guard_task`), plus `with_contract_trigger_user_from_yaml` to stack YAML-based trigger-user checks on any `@task`. The contract-ready decorator calls your callable **each poke**; it must return the dataset URN string to check (use a constant function for a fixed URN).
+- **Task decorators** (decorators distribution only): registered as `@task.contract_validate`, `@task.contract_publish`, `@task.contract_breach_guard`, `@task.contract_ready`, `@task.contract_trigger_user_guard`. Factories live under `airflow.providers.data.contracts_decorators.decorators` (`contract_validate_task`, `contract_publish_task`, `contract_breach_guard_task`, `contract_ready_task`, `contract_trigger_user_guard_task`). For plain `@task` with a separate layer, stack the matching stackable helper on the inner callable: `contract_validate`, `contract_publish`, `contract_breach_guard`, `contract_ready` (one-shot poke; fails instead of rescheduling), or `contract_trigger_user_guard`. The contract-ready **sensor** calls your callable **each poke**; it must return the dataset URN string to check (use a constant function for a fixed URN).
 - **Deferred** (future phases / follow-up): metadata DB breach tables, UI panel, `airflow contracts` CLI, full GMS aspect writes for publish/breach, OpenMetadata/Atlan hooks, `SchemaEvolutionOperator`, `SchemaMatchSensor`.
 
 ## Package layout
@@ -76,8 +76,8 @@ providers/data/contracts_decorators/
 │   │   ├── contract_breach_guard.py
 │   │   ├── contract_ready.py
 │   │   ├── contract_trigger_user_guard.py
-│   │   ├── with_contract_trigger_user_from_yaml.py
-│   │   └── _python_operator_execute.py
+│   │   ├── _python_operator_execute.py
+│   │   └── _stackable_under_task.py
 │   └── get_provider_info.py
 └── tests/unit/data/contracts_decorators/
 ```
@@ -86,8 +86,8 @@ providers/data/contracts_decorators/
 
 | Path | What it shows |
 |------|----------------|
-| `example/aip-07/minimal_standalone/` | Minimal validation with `ContractValidateOperator` + local YAML (`contract_yaml_path`); `dags/simple_trigger_user_guard.py` shows `ContractTriggerUserGuardOperator`. |
-| `example/aip-07/minimal_decorators/` | Same minimal scenario with TaskFlow decorators; publish/consumer DAGs need a `data_contract_yaml` connection; `dags/simple_trigger_user_guard_decorators.py` shows `@task.contract_trigger_user_guard`. |
+| `example/aip-07/minimal_standalone/` | Minimal validation with `ContractValidateOperator` + local YAML (`contract_yaml_path`); `dags/simple_trigger_user_guard.py` shows `ContractTriggerUserGuardOperator` with `dataset_urn` only (see `README.md` for catalog connection). |
+| `example/aip-07/minimal_decorators/` | TaskFlow examples using stacked annotations (`@task` + `contract_validate` / `contract_publish` / `contract_breach_guard` / `contract_trigger_user_guard`) and `contract_ready_task` sensor. Catalog-backed DAGs need a `data_contract_yaml` connection. |
 | `example/aip-07/example1/` | Postgres producer/consumer with operators, SQL, and YAML catalog connection. |
 
 ## Connections
@@ -146,11 +146,11 @@ Paths in `contracts` may be absolute or relative to `contracts_base_dir` / conne
 
 Equivalent patterns using `apache-airflow-providers-data-contracts-decorators`:
 
-- **Validate** — `contract_validate_task`: decorated callable returns the stats `dict` (combines “build stats” + validate in one task). Supports the same parameters as `ContractValidateOperator` (including `contract_yaml_path`).
-- **Publish** — `contract_publish_task`: callable returns stats; operator always uses the catalog hook (configure `data_contract_yaml` or DataHub).
-- **Breach guard** — `contract_breach_guard_task`: callable returns `list[str]` URNs to check.
-- **Ready** — `contract_ready_task`: callable returns the dataset URN `str` for each poke (unlike `ContractReadySensor`, which takes a static `dataset_urn`).
-- **Trigger user** — `contract_trigger_user_guard_task`: either pass `contract_yaml_path` (allow-list from YAML) and use the callable as normal task code, or omit it and return `list[str]` from the callable. **`with_contract_trigger_user_from_yaml`** stacks the same YAML allow-list on a plain `@task` (decorate bottom-up).
+- **Validate** — `contract_validate_task`: decorated callable returns the stats `dict` (combines “build stats” + validate in one task) and resolves contracts from the platform-managed catalog mapping for `dataset_urn`. Stack `contract_validate` under plain `@task` for the same behavior split across decorators.
+- **Publish** — `contract_publish_task`: callable returns stats; operator always uses the catalog hook (configure `data_contract_yaml` or DataHub). Stack `contract_publish` under `@task` when needed.
+- **Breach guard** — `contract_breach_guard_task`: callable returns `list[str]` URNs to check. Stack `contract_breach_guard` under `@task` when needed.
+- **Ready** — `contract_ready_task`: callable returns the dataset URN `str` for each poke (unlike `ContractReadySensor`, which takes a static `dataset_urn`). Stack `contract_ready` under `@task` for a **one-shot** readiness check (fails if not ready; no reschedule).
+- **Trigger user** — `contract_trigger_user_guard_task`: pass **`allowed_users`**, or **`dataset_urn`** (catalog supplied by the platform; connection/path are system-managed). Stack `contract_trigger_user_guard` innermost on the callable for plain `@task`.
 
 ### Consumer: wait then guard
 
@@ -160,9 +160,9 @@ Equivalent patterns using `apache-airflow-providers-data-contracts-decorators`:
 
 ### Manual-run user gate
 
-Contract YAML may define `allowed_trigger_users: [user, …]` (list of `DagRun.triggering_user_name` values). `ContractTriggerUserGuardOperator` accepts **`contract_yaml_path`** (mutually exclusive with **`allowed_users`**). **Scheduled runs** often have no triggering user; use `when_triggering_user_missing` (`allow` / `fail` / `skip`). On mismatch, `on_unauthorized` can `fail`, `skip`, `warn`, or **`pause_dag`** (sets `DagModel.is_paused` for this DAG, then fails the task).
+Contract YAML may define `allowed_trigger_users: [user, …]` (list of `DagRun.triggering_user_name` values). `ContractTriggerUserGuardOperator` accepts **`allowed_users`**, or **`dataset_urn`** with the platform default `data_contract_yaml` connection (`data_contract_yaml_default`) mapping URNs to files; DAG code does not pass catalog connection IDs or YAML paths for trigger-user checks. **Scheduled runs** often have no triggering user; use `when_triggering_user_missing` (`allow` / `fail` / `skip`). On mismatch, `on_unauthorized` can `fail`, `skip`, `warn`, or **`pause_dag`** (sets `DagModel.is_paused` for this DAG, then fails the task).
 
-TaskFlow: `contract_trigger_user_guard_task(contract_yaml_path=…)` runs the guard then your callable as one task; **`with_contract_trigger_user_from_yaml`** stacks the same check on a plain `@task` (decorate bottom-up: `@task` outer, wrapper directly on the function).
+TaskFlow: same parameters as `ContractTriggerUserGuardOperator`; the guard runs then your callable in one task.
 
 ## Testing
 

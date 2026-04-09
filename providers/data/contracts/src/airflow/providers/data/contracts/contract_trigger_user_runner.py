@@ -19,35 +19,87 @@
 from __future__ import annotations
 
 import logging
-from typing import Literal
+from collections.abc import Mapping
+from typing import Any, Literal
 
 from airflow.providers.common.compat.sdk import AirflowException, AirflowSkipException
 
+WhenTriggeringUserMissing = Literal["allow", "fail", "skip"]
+OnUnauthorized = Literal["fail", "skip", "warn", "pause_dag"]
 
-def allowed_trigger_users_from_contract_file(contract_file_path: str) -> list[str]:
-    """
-    Load ``allowed_trigger_users`` from a contract YAML/JSON file on disk.
 
-    The file must define the ``allowed_trigger_users`` key (use an empty list to deny
-    every non-scheduled triggering user). If the key is absent, a :class:`ValueError`
-    is raised so misconfiguration is visible when using ``contract_yaml_path`` on the guard.
+def validate_trigger_user_guard_params(
+    *,
+    allowed_users: list[str] | None,
+    contract_yaml_path: str | None,
+    catalog_conn_id: str | None,
+    dataset_urn: str | None,
+) -> None:
     """
+    Validate operator / task configuration for the trigger-user guard.
+
+    * **Inline:** non-empty ``allowed_users`` — do not set ``dataset_urn``,
+      ``contract_yaml_path``, or ``catalog_conn_id``.
+    * **From the catalog hook:** non-empty ``dataset_urn`` only. The connection/path are
+      system-managed and must not be set in DAG code. Resolution always uses the platform
+      default YAML catalog connection
+      (:attr:`~airflow.providers.data.contracts.hooks.local_yaml.YamlDataContractHook.default_conn_name`),
+      which you (or your vendor) pre-provision with ``extras.contracts`` URN → file paths.
+    """
+    has_inline = allowed_users is not None and len(allowed_users) > 0
+    has_yaml = contract_yaml_path is not None and str(contract_yaml_path).strip() != ""
+    has_conn = catalog_conn_id is not None and str(catalog_conn_id).strip() != ""
+    has_urn = dataset_urn is not None and str(dataset_urn).strip() != ""
+
+    if has_inline:
+        if has_yaml or has_conn or has_urn:
+            msg = "allowed_users cannot be combined with contract_yaml_path, catalog_conn_id, or dataset_urn"
+            raise ValueError(msg)
+        return
+
+    if has_yaml or has_conn:
+        msg = "contract_yaml_path and catalog_conn_id are system-managed; pass dataset_urn only"
+        raise ValueError(msg)
+
+    if not has_urn:
+        msg = "dataset_urn is required when resolving allow-list from a catalog contract"
+        raise ValueError(msg)
+
+
+def resolve_allowed_trigger_users_for_execution(
+    *,
+    allowed_users: list[str] | None,
+    contract_yaml_path: str | None,
+    catalog_conn_id: str | None,
+    dataset_urn: str | None,
+) -> list[str]:
+    """
+    Resolve the allow-list after templating.
+
+    Delegates to :func:`~airflow.providers.data.contracts.contract_validate_runner.load_contract_for_validation`
+    so the guard uses the platform catalog path with system-managed defaults.
+
+    Call only when :func:`validate_trigger_user_guard_params` has already passed.
+    """
+    if allowed_users is not None and len(allowed_users) > 0:
+        return list(allowed_users)
+
+    from airflow.providers.data.contracts.contract_validate_runner import load_contract_for_validation
     from airflow.providers.data.contracts.hooks.local_yaml import YamlDataContractHook
 
-    contract = YamlDataContractHook.load_contract_from_file(contract_file_path)
+    contract = load_contract_for_validation(
+        catalog_conn_id=YamlDataContractHook.default_conn_name,
+        dataset_urn=str(dataset_urn),
+        contract_yaml_path=None,
+    )
     raw = contract.allowed_trigger_users
     if raw is None:
         msg = (
-            f"Contract file {contract_file_path!r} does not define 'allowed_trigger_users'. "
-            "Add a YAML list of Airflow user names (DagRun.triggering_user_name), or use "
-            "allowed_users=... on the operator instead of contract_yaml_path."
+            f"Contract {dataset_urn!r} does not define 'allowed_trigger_users'. "
+            "Add the key to the contract or use allowed_users=... on the operator."
         )
         raise ValueError(msg)
     return list(raw)
-
-
-WhenTriggeringUserMissing = Literal["allow", "fail", "skip"]
-OnUnauthorized = Literal["fail", "skip", "warn", "pause_dag"]
 
 
 def _normalize_user(name: str | None, *, case_insensitive: bool) -> str | None:
@@ -93,10 +145,10 @@ def run_trigger_user_guard(
     ``triggering_user_name`` is set for many manual, UI, and REST triggers; scheduled runs
     often leave it empty. Use ``when_triggering_user_missing`` for that case.
 
-    Used by
-    :class:`~airflow.providers.data.contracts.operators.contract_trigger_user_guard.ContractTriggerUserGuardOperator`,
-    ``contract_trigger_user_guard_task``, and ``with_contract_trigger_user_from_yaml``.
-    Allow-lists can be loaded from YAML with :func:`allowed_trigger_users_from_contract_file`.
+    Used by :class:`~airflow.providers.data.contracts.operators.contract_trigger_user_guard.ContractTriggerUserGuardOperator`,
+    :func:`run_trigger_user_guard_for_context`, and ``contract_trigger_user_guard_task``.
+    Contract allow-lists are resolved with :func:`resolve_allowed_trigger_users_for_execution`
+    (via the catalog hook for a ``dataset_urn``).
     """
     if _normalize_user(triggering_user_name, case_insensitive=False) is None:
         if when_triggering_user_missing == "allow":
@@ -141,3 +193,27 @@ def run_trigger_user_guard(
         raise AirflowException(msg + f"; DAG {dag_id!r} has been paused")
 
     raise AirflowException(msg)
+
+
+def run_trigger_user_guard_for_context(
+    context: Mapping[str, Any],
+    *,
+    allowed_users: list[str],
+    case_insensitive: bool,
+    when_triggering_user_missing: WhenTriggeringUserMissing,
+    on_unauthorized: OnUnauthorized,
+    log: logging.Logger,
+) -> None:
+    """Run :func:`run_trigger_user_guard` using ``dag`` / ``dag_run`` from an Airflow task context."""
+    dag = context["dag"]
+    dr = context.get("dag_run")
+    triggering_user_name = getattr(dr, "triggering_user_name", None) if dr else None
+    run_trigger_user_guard(
+        dag_id=dag.dag_id,
+        triggering_user_name=triggering_user_name,
+        allowed_users=allowed_users,
+        case_insensitive=case_insensitive,
+        when_triggering_user_missing=when_triggering_user_missing,
+        on_unauthorized=on_unauthorized,
+        log=log,
+    )

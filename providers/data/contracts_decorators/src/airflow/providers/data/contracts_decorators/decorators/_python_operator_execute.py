@@ -18,7 +18,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import logging
+from typing import TYPE_CHECKING, Any
 
 from airflow.providers.common.compat.sdk import AIRFLOW_V_3_0_PLUS, context_merge
 
@@ -43,3 +44,16 @@ def bind_python_decorated_callable(operator: _PythonDecoratedOperator, context: 
         return ExecutionCallableRunner, context_get_outlet_events(context)
 
     operator._PythonOperator__prepare_execution = __prepare_execution
+
+
+def log_python_callable_return_value(
+    logger: logging.Logger,
+    result: Any,
+    *,
+    show_return_value: bool,
+) -> None:
+    """Log the decorated callable's return value (or that it was hidden)."""
+    if show_return_value:
+        logger.info("Done. Returned value was: %s", result)
+    else:
+        logger.info("Done. Returned value not shown")

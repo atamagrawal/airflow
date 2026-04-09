@@ -15,6 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 """Shared contract validation logic for :class:`ContractValidateOperator` and task decorators."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -22,7 +23,6 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 from airflow.providers.common.compat.sdk import AirflowException
 from airflow.providers.data.contracts.hooks.base_catalog import get_catalog_hook
-from airflow.providers.data.contracts.hooks.local_yaml import YamlDataContractHook
 from airflow.providers.data.contracts.models.contract import ContractViolation, DataContract
 from airflow.providers.data.contracts.models.contract_result import build_contract_result
 from airflow.providers.data.contracts.validators.contract_validators import (
@@ -39,20 +39,34 @@ if TYPE_CHECKING:
 OnViolation = Literal["fail", "warn"]
 
 
+def require_catalog_conn_or_contract_yaml(
+    *,
+    catalog_conn_id: str | None,
+    contract_yaml_path: str | None,
+) -> None:
+    """Operators must set at least one of ``catalog_conn_id`` or ``contract_yaml_path``."""
+    has_yaml = contract_yaml_path is not None and str(contract_yaml_path).strip() != ""
+    has_conn = catalog_conn_id is not None and str(catalog_conn_id).strip() != ""
+    if not has_yaml and not has_conn:
+        msg = "Provide catalog_conn_id or contract_yaml_path"
+        raise ValueError(msg)
+
+
 class _XComPushPull(Protocol):
     def xcom_push(self, key: str, value: object) -> None: ...
 
 
 def load_contract_for_validation(
     *,
-    catalog_conn_id: str,
+    catalog_conn_id: str | None,
     dataset_urn: str,
     contract_yaml_path: str | None,
 ) -> DataContract:
-    """Load a :class:`~airflow.providers.data.contracts.models.contract.DataContract` from YAML or catalog."""
-    if contract_yaml_path:
-        return YamlDataContractHook.load_contract_from_file(contract_yaml_path)
-    hook = get_catalog_hook(catalog_conn_id=catalog_conn_id)
+    """Load a :class:`~airflow.providers.data.contracts.models.contract.DataContract` via the catalog hook."""
+    hook = get_catalog_hook(
+        catalog_conn_id=catalog_conn_id,
+        contract_yaml_path=contract_yaml_path,
+    )
     return hook.get_contract(dataset_urn)
 
 
@@ -85,7 +99,7 @@ def validate_contract_stats(
     context: Context,
     task_id: str,
     ti: _XComPushPull,
-    catalog_conn_id: str,
+    catalog_conn_id: str | None,
     dataset_urn: str,
     contract_yaml_path: str | None = None,
     validate_schema_flag: bool = True,
@@ -105,6 +119,10 @@ def validate_contract_stats(
     Used by :class:`~airflow.providers.data.contracts.operators.contract_validate.ContractValidateOperator`
     and :func:`~airflow.providers.data.contracts_decorators.decorators.contract_validate.contract_validate_task`.
     """
+    require_catalog_conn_or_contract_yaml(
+        catalog_conn_id=catalog_conn_id,
+        contract_yaml_path=contract_yaml_path,
+    )
     contract = load_contract_for_validation(
         catalog_conn_id=catalog_conn_id,
         dataset_urn=dataset_urn,
@@ -154,7 +172,10 @@ def validate_contract_stats(
     critical = [v for v in adjusted if v.severity == "CRITICAL"]
     breach_id: str | None = None
     if critical and report_breach_to_catalog:
-        hook = get_catalog_hook(catalog_conn_id=catalog_conn_id)
+        hook = get_catalog_hook(
+            catalog_conn_id=catalog_conn_id,
+            contract_yaml_path=contract_yaml_path,
+        )
         breach_id = hook.report_breach(
             dataset_urn,
             critical,

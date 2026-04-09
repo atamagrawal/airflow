@@ -28,7 +28,12 @@ from airflow.providers.data.contracts.models.contract import DataContract, data_
 
 class YamlDataContractHook(BaseCatalogHook):
     """
-    Catalog-lite hook that loads contracts from YAML (or JSON) files.
+    Load contracts from YAML or JSON files (catalog-lite / file-backed policy).
+
+    **Without** an Airflow connection, pass ``contract_yaml_path=...`` to read a single contract file
+    from disk (``get_contract`` then checks that ``dataset_urn`` matches the file's ``dataset_urn``).
+
+    **With** a ``data_contract_yaml`` connection, ``extras.contracts`` maps URNs to file paths.
 
     Connection extras:
 
@@ -41,12 +46,30 @@ class YamlDataContractHook(BaseCatalogHook):
     conn_type = "data_contract_yaml"
     hook_name = "Data contract (YAML)"
 
-    def __init__(self, catalog_conn_id: str = default_conn_name) -> None:
+    def __init__(
+        self,
+        catalog_conn_id: str | None = None,
+        *,
+        contract_yaml_path: str | Path | None = None,
+    ) -> None:
         super().__init__()
-        self.catalog_conn_id = catalog_conn_id
-        conn = self.get_connection(catalog_conn_id)
+        path_set = contract_yaml_path is not None and str(contract_yaml_path).strip() != ""
+        conn_set = catalog_conn_id is not None and str(catalog_conn_id).strip() != ""
+        if path_set and conn_set:
+            msg = "Set only one of catalog_conn_id or contract_yaml_path on YamlDataContractHook"
+            raise ValueError(msg)
+        if path_set:
+            self.catalog_conn_id = ""
+            self._file_only_path = Path(contract_yaml_path).expanduser()
+            self._contracts_map = {}
+            self._base_dir = None
+            return
+        cid = catalog_conn_id if conn_set else self.default_conn_name
+        self.catalog_conn_id = cid
+        self._file_only_path = None
+        conn = self.get_connection(cid)
         extra = conn.extra_dejson
-        self._contracts_map: dict[str, str] = dict(extra.get("contracts") or {})
+        self._contracts_map = dict(extra.get("contracts") or {})
         base = extra.get("contracts_base_dir") or conn.host
         self._base_dir = Path(base).expanduser() if base else None
 
@@ -76,6 +99,15 @@ class YamlDataContractHook(BaseCatalogHook):
         return data_contract_from_mapping(data, catalog_url=f"file://{p.resolve()}")
 
     def get_contract(self, dataset_urn: str) -> DataContract:
+        if self._file_only_path is not None:
+            contract = self.load_contract_from_file(self._file_only_path)
+            if contract.dataset_urn != dataset_urn:
+                msg = (
+                    f"Contract file defines dataset_urn {contract.dataset_urn!r}, "
+                    f"but {dataset_urn!r} was requested."
+                )
+                raise ContractResolutionError(msg)
+            return contract
         path_key = self._contracts_map.get(dataset_urn)
         if not path_key:
             msg = (

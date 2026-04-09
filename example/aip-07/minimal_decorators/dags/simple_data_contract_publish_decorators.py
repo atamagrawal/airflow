@@ -16,39 +16,28 @@
 # under the License.
 
 """
-Stub **producer publish** using ``contract_publish_task``.
+Stub **producer publish** using TaskFlow contract helpers.
 
 Publishing always goes through the catalog hook, so you must define a
 ``data_contract_yaml`` connection that maps ``DATASET_URN`` to
 ``contracts/sample_dataset.yaml``. See ``README.md`` in this folder.
+
+This DAG uses the stacked style: plain ``@task`` outer with inner ``@contract_publish``.
 """
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 
 from airflow.providers.data.contracts_decorators.decorators.contract_publish import (
-    contract_publish_task,
+    contract_publish,
 )
-from airflow.sdk import DAG
+from airflow.sdk import DAG, task
 
-_EXAMPLE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATASET_URN = "urn:example:sample_dataset"
-CATALOG_CONN_ID = os.environ.get("AIP07_YAML_CATALOG_CONN_ID", "data_contract_yaml_default")
 
 
-@contract_publish_task(
-    catalog_conn_id=CATALOG_CONN_ID,
-    dataset_urn=DATASET_URN,
-    upstream_urns=[],
-    update_contract_status=True,
-    contract_status="ACTIVE",
-    emit_run_facet=True,
-    task_id="publish_contract",
-)
-def publish_sample_dataset_stats() -> dict:
-    """Stats passed to ``update_contract_status`` (illustrative — not tied to a real load)."""
+def _publish_stats_payload() -> dict:
     return {
         "row_count": 3,
         "schema": [
@@ -56,6 +45,19 @@ def publish_sample_dataset_stats() -> dict:
             {"name": "amount", "type": "FLOAT", "nullable": False},
         ],
     }
+
+
+@task
+@contract_publish(
+    dataset_urn=DATASET_URN,
+    upstream_urns=[],
+    update_contract_status=True,
+    contract_status="ACTIVE",
+    emit_run_facet=True,
+)
+def publish_sample_dataset_stats() -> dict:
+    """Return publish stats via ``@task`` + ``contract_publish``."""
+    return _publish_stats_payload()
 
 
 with DAG(

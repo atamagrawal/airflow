@@ -20,8 +20,10 @@
 # AIP-07 Data Contracts — Minimal decorators example
 
 This folder mirrors ``example/aip-07/minimal_standalone/`` but uses TaskFlow helpers from
-**apache-airflow-providers-data-contracts-decorators** (``@task.contract_validate``,
-``@task.contract_publish``, ``@task.contract_ready``, ``@task.contract_breach_guard``).
+**apache-airflow-providers-data-contracts-decorators** (``@task.contract_*``). These examples
+show the stacked style (plain ``@task`` with inner stackable helpers such as ``contract_validate``,
+``contract_publish``, ``contract_breach_guard``, ``contract_trigger_user_guard``). See provider docs
+for ``contract_ready`` (one-shot) vs ``@task.contract_ready`` (sensor).
 
 ```
 example/aip-07/minimal_decorators/
@@ -30,7 +32,7 @@ example/aip-07/minimal_decorators/
 ├── dags/
 │   ├── simple_data_contract_decorators.py           # Validate (no catalog connection)
 │   ├── simple_data_contract_publish_decorators.py   # Publish stub (needs YAML connection)
-│   ├── simple_data_contract_consumer_decorators.py  # Ready sensor + breach guard
+│   ├── simple_data_contract_consumer_decorators.py  # Ready sensor + stacked breach guard
 │   └── simple_trigger_user_guard_decorators.py      # Allow-list for DagRun.triggering_user_name
 └── README.md
 ```
@@ -44,23 +46,33 @@ Or: ``pip install 'apache-airflow[data.contracts.decorators]'`` from a release t
 
 ## DAG: trigger user guard
 
-``simple_trigger_user_guard_decorators.py`` — allow-list comes from ``allowed_trigger_users`` in
-``contracts/sample_dataset.yaml``. The DAG shows both **``with_contract_trigger_user_from_yaml``**
-(stacked under ``@task`` so any task body can be guarded) and **``contract_trigger_user_guard_task``
-with ``contract_yaml_path``** (one decorated operator). Manual triggers from the UI/REST/CLI usually
-populate ``triggering_user_name``; **scheduled runs** often do not—examples use ``when_triggering_user_missing="allow"``.
-The operator-only equivalent is ``example/aip-07/minimal_standalone/dags/simple_trigger_user_guard.py``.
+``simple_trigger_user_guard_decorators.py`` — DAG passes **``dataset_urn``** only; the platform must
+provision ``data_contract_yaml_default`` with ``extras.contracts`` mapping that URN to
+``contracts/sample_dataset.yaml`` (same connection pattern as publish/consumer below). The DAG shows
+stacked ``@task`` with inner ``@contract_trigger_user_guard``. Manual triggers from the UI/REST/CLI usually populate
+``triggering_user_name``; **scheduled runs** often do not—examples use
+``when_triggering_user_missing="allow"``. The operator-only equivalent is
+``example/aip-07/minimal_standalone/dags/simple_trigger_user_guard.py``. Uses the **Connection**
+snippet below.
 
 ## DAG: validation only
 
 ``simple_data_contract_decorators.py`` — same behavior as ``minimal_standalone`` validation DAG:
-``contract_yaml_path`` loads the contract from disk; ``report_breach_to_catalog=False`` avoids
-catalog calls on failure. No Airflow connection is required.
+validation resolves from the platform-managed catalog mapping for
+``urn:example:sample_dataset``.
 
-## DAGs: publish and consumer
+## DAG: publish
 
-``simple_data_contract_publish_decorators.py`` and ``simple_data_contract_consumer_decorators.py``
-call the YAML catalog hook. Add a connection whose extras map the dataset URN to this file
+``simple_data_contract_publish_decorators.py`` — stacked ``@task`` + ``@contract_publish``.
+
+## DAG: consumer
+
+``simple_data_contract_consumer_decorators.py`` — ``@contract_ready_task`` sensor, then stacked
+``@task`` + ``@contract_breach_guard``, then a placeholder task.
+
+## Connection (publish, consumer, trigger-user)
+
+These catalog-backed DAGs need a ``data_contract_yaml`` connection. Add a connection whose extras map the dataset URN to this file
 (adjust the YAML path to where the repo is mounted in your environment, e.g. Breeze):
 
 ```bash
@@ -73,8 +85,6 @@ airflow connections add data_contract_yaml_default \
   }'
 ```
 
-Optional: set ``AIP07_YAML_CATALOG_CONN_ID`` if you use a non-default connection id.
-
 ## Copy into Airflow
 
 Copy ``dags/`` (and keep ``contracts/`` at the same relative layout), or mount this tree and point
@@ -83,5 +93,5 @@ Copy ``dags/`` (and keep ``contracts/`` at the same relative layout), or mount t
 ## Related
 
 * ``impl/AIP-07-data-contracts.md`` — implementation notes (operators, decorators, runners, tests)
-* ``example/aip-07/minimal_standalone/`` — operator-based minimal validation
+* ``example/aip-07/minimal_standalone/README.md`` — operator-based minimal validation and trigger-user guard
 * ``example/aip-07/example1/`` — full Postgres producer / consumer with operators

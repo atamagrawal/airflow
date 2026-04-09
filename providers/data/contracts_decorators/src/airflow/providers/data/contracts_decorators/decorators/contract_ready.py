@@ -16,15 +16,68 @@
 # under the License.
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from airflow.providers.common.compat.sdk import context_merge, determine_kwargs, task_decorator_factory
+from airflow.providers.common.compat.sdk import (
+    AirflowException,
+    context_merge,
+    determine_kwargs,
+    task_decorator_factory,
+)
 from airflow.providers.data.contracts.contract_ready_runner import contract_ready_poke
+from airflow.providers.data.contracts.hooks.local_yaml import YamlDataContractHook
+from airflow.providers.data.contracts_decorators.decorators._stackable_under_task import (
+    current_task_context_and_renderer,
+    expect_non_empty_dataset_urn,
+)
 from airflow.providers.standard.decorators.sensor import DecoratedSensorOperator
 
 if TYPE_CHECKING:
     from airflow.providers.common.compat.sdk import Context, TaskDecorator
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def contract_ready(
+    *,
+    min_update_time: str | None = None,
+    fail_on_breach: bool = True,
+) -> Callable[[F], F]:
+    """
+    One-shot readiness check when stacked **under** plain ``@task`` (apply bottom-up).
+
+    The inner callable returns a dataset URN (same as each poke of ``@task.contract_ready``). This
+    wrapper calls :func:`~airflow.providers.data.contracts.contract_ready_runner.contract_ready_poke`
+    once; if the contract is not ready, raises :class:`~airflow.providers.common.compat.sdk.AirflowException`
+    (unlike the sensor, which reschedules). On success, returns the URN string for XCom.
+
+    Renders string parameters with the outer task's Jinja environment.
+    """
+
+    def decorator(f: F) -> F:
+        @functools.wraps(f)
+        def wrapper(*args: Any, **kwargs: Any) -> str:
+            ctx, render = current_task_context_and_renderer()
+            r_min = render(min_update_time) if min_update_time is not None else None
+            stripped = expect_non_empty_dataset_urn(f(*args, **kwargs))
+            if not contract_ready_poke(
+                catalog_conn_id=YamlDataContractHook.default_conn_name,
+                dataset_urn=stripped,
+                min_update_time=r_min,
+                fail_on_breach=fail_on_breach,
+            ):
+                msg = (
+                    f"Dataset {stripped!r} is not ready (contract not ACTIVE or validation gate not met). "
+                    "Use @task.contract_ready for rescheduling sensor behavior."
+                )
+                raise AirflowException(msg)
+            return stripped
+
+        return wrapper  # type: ignore[return-value]
+
+    return decorator
 
 
 class _ContractReadyDecoratedSensor(DecoratedSensorOperator):
@@ -45,14 +98,12 @@ class _ContractReadyDecoratedSensor(DecoratedSensorOperator):
         self,
         *,
         python_callable: Callable,
-        catalog_conn_id: str,
         min_update_time: str | None = None,
         fail_on_breach: bool = True,
         op_args: Any = None,
         op_kwargs: Any = None,
         **kwargs,
     ) -> None:
-        self.catalog_conn_id = catalog_conn_id
         self.min_update_time = min_update_time
         self.fail_on_breach = fail_on_breach
         super().__init__(
@@ -67,14 +118,11 @@ class _ContractReadyDecoratedSensor(DecoratedSensorOperator):
         self.op_kwargs = determine_kwargs(self.python_callable, self.op_args, context)
 
         self.log.info("Poking callable: %s", str(self.python_callable))
-        urn = self.python_callable(*self.op_args, **self.op_kwargs)
-        if not isinstance(urn, str) or not urn.strip():
-            msg = f"Callable must return a non-empty dataset URN str, got {type(urn).__name__!r}"
-            raise TypeError(msg)
+        urn = expect_non_empty_dataset_urn(self.python_callable(*self.op_args, **self.op_kwargs))
 
         return contract_ready_poke(
-            catalog_conn_id=self.catalog_conn_id,
-            dataset_urn=urn.strip(),
+            catalog_conn_id=YamlDataContractHook.default_conn_name,
+            dataset_urn=urn,
             min_update_time=self.min_update_time,
             fail_on_breach=self.fail_on_breach,
         )
@@ -91,6 +139,9 @@ def contract_ready_task(
 
     The callable must return a non-empty ``str`` (dataset URN). Use a constant function to mirror
     :class:`~airflow.providers.data.contracts.sensors.contract_ready.ContractReadySensor` with a fixed URN.
+
+    For a single Python task that must fail when the dataset is not ready yet (no reschedule), stack
+    :func:`contract_ready` under plain ``@task`` instead.
 
     :param multiple_outputs: Must be ``False`` or omitted.
     """

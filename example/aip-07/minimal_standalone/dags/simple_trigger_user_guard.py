@@ -18,17 +18,15 @@
 """
 Gate a DAG run on **who triggered it** using :class:`ContractTriggerUserGuardOperator`.
 
-Allow-list is read from ``allowed_trigger_users`` in
-``example/aip-07/minimal_standalone/contracts/sample_dataset.yaml`` via ``contract_yaml_path``.
-You can still pass ``allowed_users=[...]`` instead of ``contract_yaml_path`` if you prefer
-the list in Python.
+Pass **``dataset_urn``** only; the platform catalog (default ``data_contract_yaml`` connection
+``data_contract_yaml_default``) must map that URN to the contract YAML with
+``allowed_trigger_users``. Paths are **not** set in customer DAGs.
+
+You can pass ``allowed_users=[...]`` instead for a self-contained allow-list (omit ``dataset_urn``).
 
 ``DagRun.triggering_user_name`` is set for many manual triggers (UI, REST, CLI). Scheduled
 runs often have no triggering user—use ``when_triggering_user_missing`` (here ``allow`` so
 scheduled runs still proceed).
-
-Edit the YAML list to match users in your Airflow metadata DB. Use ``on_unauthorized="pause_dag"``
-to pause the DAG on violation (task still fails after pausing).
 
 Requires: ``apache-airflow-providers-data-contracts``.
 
@@ -37,7 +35,6 @@ See also: ``example/aip-07/minimal_decorators/dags/simple_trigger_user_guard_dec
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 
 from airflow.providers.data.contracts.operators.contract_trigger_user_guard import (
@@ -45,8 +42,7 @@ from airflow.providers.data.contracts.operators.contract_trigger_user_guard impo
 )
 from airflow.sdk import DAG, task
 
-_EXAMPLE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONTRACT_YAML = os.path.join(_EXAMPLE_ROOT, "contracts", "sample_dataset.yaml")
+SAMPLE_DATASET_URN = "urn:example:sample_dataset"
 
 
 @task
@@ -65,7 +61,7 @@ with DAG(
 ) as _:
     guard = ContractTriggerUserGuardOperator(
         task_id="guard_manual_trigger_user",
-        contract_yaml_path=CONTRACT_YAML,
+        dataset_urn=SAMPLE_DATASET_URN,
         when_triggering_user_missing="allow",
         on_unauthorized="fail",
     )

@@ -72,6 +72,46 @@ def test_contract_validate_operator_success(sample_contract):
     ti.xcom_push.assert_called_once()
 
 
+def test_contract_validate_operator_requires_catalog_or_yaml():
+    with pytest.raises(ValueError, match="catalog_conn_id or contract_yaml_path"):
+        ContractValidateOperator(
+            task_id="validate",
+            dataset_urn="urn:x",
+            stats_xcom_task_id="load",
+        )
+
+
+def test_contract_validate_operator_yaml_only_no_connection(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "dataset_urn: urn:local:x\n"
+        "dataset_name: x\nversion: 1\nstatus: ACTIVE\nschema:\n"
+        "  - name: id\n    type: STRING\n    nullable: false\n"
+        "min_row_count: 1\n",
+        encoding="utf-8",
+    )
+    op = ContractValidateOperator(
+        task_id="validate",
+        dataset_urn="urn:local:x",
+        contract_yaml_path=str(p),
+        stats_xcom_task_id="load",
+        validate_freshness=False,
+        validate_sla=False,
+        report_breach_to_catalog=False,
+    )
+    ti = MagicMock()
+    ti.xcom_pull.return_value = {
+        "row_count": 5,
+        "schema": [{"name": "id", "type": "STRING", "nullable": False}],
+    }
+    dag = MagicMock()
+    dag.dag_id = "dag1"
+    context = {"ti": ti, "dag": dag, "run_id": "run1", "dag_run": None}
+    out = op.execute(context)
+    assert out["passed"] is True
+    ti.xcom_push.assert_called_once()
+
+
 def test_contract_validate_operator_fails_on_schema(sample_contract):
     op = ContractValidateOperator(
         task_id="validate",

@@ -118,8 +118,27 @@ class BaseCatalogHook(BaseHook, ABC):
         )
 
 
-def get_catalog_hook(*, catalog_conn_id: str) -> BaseCatalogHook:
-    """Instantiate the hook declared by the Airflow connection type."""
+def get_catalog_hook(
+    *,
+    catalog_conn_id: str | None = None,
+    contract_yaml_path: str | None = None,
+) -> BaseCatalogHook:
+    """
+    Build a catalog hook from a connection or from a local contract file.
+
+    If ``contract_yaml_path`` is set (non-empty), returns :class:`~airflow.providers.data.contracts.hooks.local_yaml.YamlDataContractHook`
+    in file-only mode (no Airflow connection). Otherwise ``catalog_conn_id`` must be set to a
+    ``datahub`` or ``data_contract_yaml`` connection.
+    """
+    has_yaml = contract_yaml_path is not None and str(contract_yaml_path).strip() != ""
+    has_conn = catalog_conn_id is not None and str(catalog_conn_id).strip() != ""
+    if has_yaml:
+        from airflow.providers.data.contracts.hooks.local_yaml import YamlDataContractHook
+
+        return YamlDataContractHook(contract_yaml_path=contract_yaml_path)
+    if not has_conn:
+        msg = "Provide catalog_conn_id or contract_yaml_path"
+        raise ValueError(msg)
     conn = BaseHook.get_connection(catalog_conn_id)
     if conn.conn_type == "datahub":
         from airflow.providers.data.contracts.hooks.datahub import DataHubCatalogHook

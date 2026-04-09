@@ -24,12 +24,13 @@ It depends on ``apache-airflow-providers-standard`` (Python / sensor decorator b
 
 Registered names and Python factories:
 
-* ``@task.contract_validate`` — ``contract_validate_task`` — callable returns contract **stats** ``dict``.
-* ``@task.contract_publish`` — ``contract_publish_task`` — callable returns stats for lineage / status update.
-* ``@task.contract_breach_guard`` — ``contract_breach_guard_task`` — callable returns ``list[str]`` dataset URNs.
-* ``@task.contract_ready`` — ``contract_ready_task`` — **each poke** invokes the callable; it must return the dataset URN ``str`` to check (constant lambda for a fixed URN).
-* ``@task.contract_trigger_user_guard`` — ``contract_trigger_user_guard_task`` — either pass ``contract_yaml_path`` (allow-list in YAML key ``allowed_trigger_users``) and use the callable as normal task code, **or** omit it and return ``list[str]`` from the callable.
-* ``with_contract_trigger_user_from_yaml`` — stack under ``@task`` so any task body runs after the same YAML allow-list check (Jinja on the path is supported).
+* ``@task.contract_validate`` — ``contract_validate_task`` — callable returns contract **stats** ``dict``. Stack ``contract_validate`` (inner) under plain ``@task`` (outer) for the same validation after your callable.
+* ``@task.contract_publish`` — ``contract_publish_task`` — callable returns stats for lineage / status update. Stack ``contract_publish`` under ``@task`` for the same publish step.
+* ``@task.contract_breach_guard`` — ``contract_breach_guard_task`` — callable returns ``list[str]`` dataset URNs. Stack ``contract_breach_guard`` under ``@task`` for the same guard.
+* ``@task.contract_ready`` — ``contract_ready_task`` — **each poke** invokes the callable; it must return the dataset URN ``str`` to check (constant lambda for a fixed URN). For a **one-shot** readiness check in a normal task (fail if not ready, no reschedule), stack ``contract_ready`` under ``@task``.
+* ``@task.contract_trigger_user_guard`` — ``contract_trigger_user_guard_task`` — pass **``allowed_users``**, or **``dataset_urn``** (platform catalog maps the URN to contract YAML via system-managed connection/path); the callable is normal task code and the guard runs first. To use plain ``@task`` instead, stack ``contract_trigger_user_guard`` (inner) under ``@task`` (outer).
+
+For catalog-backed decorators, connection id / YAML path are system-managed; DAG code passes dataset URNs and stats/URN lists only.
 
 Import from ``airflow.providers.data.contracts_decorators.decorators``.
 

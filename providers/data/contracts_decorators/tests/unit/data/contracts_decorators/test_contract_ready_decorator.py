@@ -19,9 +19,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from airflow.providers.common.compat.sdk import AirflowException
 from airflow.providers.data.contracts.models.contract import DataContract, SchemaField
 from airflow.providers.data.contracts_decorators.decorators.contract_ready import (
     _ContractReadyDecoratedSensor,
+    contract_ready,
 )
 
 
@@ -32,7 +36,6 @@ def test_contract_ready_decorated_sensor_poke_true():
     op = _ContractReadyDecoratedSensor(
         task_id="ready",
         python_callable=urn,
-        catalog_conn_id="datahub_default",
         poke_interval=1,
     )
     context = {"ti": MagicMock(), "dag": MagicMock(), "run_id": "r1", "dag_run": None}
@@ -61,7 +64,6 @@ def test_contract_ready_decorated_sensor_poke_waiting():
     op = _ContractReadyDecoratedSensor(
         task_id="ready",
         python_callable=urn,
-        catalog_conn_id="datahub_default",
         min_update_time="2099-01-01T00:00:00+00:00",
         poke_interval=1,
     )
@@ -83,3 +85,69 @@ def test_contract_ready_decorated_sensor_poke_waiting():
         return_value=mock_hook,
     ):
         assert op.poke(context) is False
+
+
+def test_contract_ready_stackable_returns_urn_when_ready():
+    @contract_ready()
+    def urn():
+        return "urn:ds"
+
+    mock_task = MagicMock()
+    mock_task.render_template.side_effect = lambda v, *a, **k: v
+    mock_task.get_template_env.return_value = MagicMock()
+    mock_task.task_id = "ready"
+    mock_task.log = MagicMock()
+    context = {"task": mock_task, "ti": MagicMock(), "dag": MagicMock(), "run_id": "r1", "dag_run": None}
+
+    contract = DataContract(
+        contract_id="c",
+        dataset_urn="urn:ds",
+        dataset_name="ds",
+        version=1,
+        status="ACTIVE",
+        schema=[SchemaField(name="id", type="STRING", nullable=False)],
+    )
+    mock_hook = MagicMock()
+    mock_hook.get_contract.return_value = contract
+    with (
+        patch(
+            "airflow.providers.data.contracts.contract_ready_runner.get_catalog_hook",
+            return_value=mock_hook,
+        ),
+        patch("airflow.sdk.get_current_context", return_value=context),
+    ):
+        assert urn() == "urn:ds"
+
+
+def test_contract_ready_stackable_fails_when_not_ready():
+    @contract_ready(min_update_time="2099-01-01T00:00:00+00:00")
+    def urn():
+        return "urn:ds"
+
+    mock_task = MagicMock()
+    mock_task.render_template.side_effect = lambda v, *a, **k: v
+    mock_task.get_template_env.return_value = MagicMock()
+    mock_task.task_id = "ready"
+    mock_task.log = MagicMock()
+    context = {"task": mock_task, "ti": MagicMock(), "dag": MagicMock(), "run_id": "r1", "dag_run": None}
+
+    contract = DataContract(
+        contract_id="c",
+        dataset_urn="urn:ds",
+        dataset_name="ds",
+        version=1,
+        status="ACTIVE",
+        schema=[SchemaField(name="id", type="STRING", nullable=False)],
+        last_validated_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    mock_hook = MagicMock()
+    mock_hook.get_contract.return_value = contract
+    with (
+        patch(
+            "airflow.providers.data.contracts.contract_ready_runner.get_catalog_hook",
+            return_value=mock_hook,
+        ),
+        patch("airflow.sdk.get_current_context", return_value=context),
+    ):
+        with pytest.raises(AirflowException, match="not ready"):
+            urn()

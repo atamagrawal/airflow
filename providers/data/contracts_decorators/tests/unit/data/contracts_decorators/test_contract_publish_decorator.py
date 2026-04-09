@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 from airflow.providers.data.contracts_decorators.decorators.contract_publish import (
     _ContractPublishDecoratedOperator,
+    contract_publish,
 )
 
 
@@ -30,7 +31,6 @@ def test_contract_publish_decorated_operator_calls_hook():
     op = _ContractPublishDecoratedOperator(
         task_id="publish",
         python_callable=stats,
-        catalog_conn_id="datahub_default",
         dataset_urn="urn:x",
         upstream_urns=["urn:up"],
         update_contract_status=True,
@@ -47,6 +47,40 @@ def test_contract_publish_decorated_operator_calls_hook():
         return_value=mock_hook,
     ):
         op.execute(context)
+
+    mock_hook.emit_lineage.assert_called_once()
+    mock_hook.update_contract_status.assert_called_once()
+
+
+def test_contract_publish_stackable_calls_publish_runner():
+    @contract_publish(
+        dataset_urn="urn:x",
+        upstream_urns=["urn:up"],
+        update_contract_status=True,
+        emit_run_facet=True,
+    )
+    def stats():
+        return {"row_count": 1}
+
+    mock_task = MagicMock()
+    mock_task.render_template.side_effect = lambda v, *a, **k: v
+    mock_task.get_template_env.return_value = MagicMock()
+    mock_task.task_id = "publish"
+    mock_task.log = MagicMock()
+    ti = MagicMock()
+    dag = MagicMock()
+    dag.dag_id = "dag1"
+    ctx = {"task": mock_task, "ti": ti, "dag": dag, "run_id": "run1", "dag_run": None}
+
+    mock_hook = MagicMock()
+    with (
+        patch(
+            "airflow.providers.data.contracts.contract_publish_runner.get_catalog_hook",
+            return_value=mock_hook,
+        ),
+        patch("airflow.sdk.get_current_context", return_value=ctx),
+    ):
+        stats()
 
     mock_hook.emit_lineage.assert_called_once()
     mock_hook.update_contract_status.assert_called_once()

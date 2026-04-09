@@ -18,23 +18,35 @@
 from __future__ import annotations
 
 from airflow.providers.data.contracts_decorators.decorators.contract_breach_guard import (
+    contract_breach_guard,
     contract_breach_guard_task,
 )
-from airflow.providers.data.contracts_decorators.decorators.contract_publish import contract_publish_task
-from airflow.providers.data.contracts_decorators.decorators.contract_ready import contract_ready_task
+from airflow.providers.data.contracts_decorators.decorators.contract_publish import (
+    contract_publish,
+    contract_publish_task,
+)
+from airflow.providers.data.contracts_decorators.decorators.contract_ready import (
+    contract_ready,
+    contract_ready_task,
+)
 from airflow.providers.data.contracts_decorators.decorators.contract_trigger_user_guard import (
+    contract_trigger_user_guard,
     contract_trigger_user_guard_task,
 )
-from airflow.providers.data.contracts_decorators.decorators.contract_validate import contract_validate_task
-from airflow.providers.data.contracts_decorators.decorators.with_contract_trigger_user_from_yaml import (
-    with_contract_trigger_user_from_yaml,
+from airflow.providers.data.contracts_decorators.decorators.contract_validate import (
+    contract_validate,
+    contract_validate_task,
 )
 
 __all__ = [
+    "contract_breach_guard",
     "contract_breach_guard_task",
+    "contract_publish",
     "contract_publish_task",
+    "contract_ready",
     "contract_ready_task",
+    "contract_trigger_user_guard",
     "contract_trigger_user_guard_task",
+    "contract_validate",
     "contract_validate_task",
-    "with_contract_trigger_user_from_yaml",
 ]

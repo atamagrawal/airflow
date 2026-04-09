@@ -16,13 +16,20 @@
 # under the License.
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from airflow.providers.common.compat.sdk import task_decorator_factory
 from airflow.providers.data.contracts.contract_breach_runner import run_contract_breach_guard
+from airflow.providers.data.contracts.hooks.local_yaml import YamlDataContractHook
 from airflow.providers.data.contracts_decorators.decorators._python_operator_execute import (
     bind_python_decorated_callable,
+    log_python_callable_return_value,
+)
+from airflow.providers.data.contracts_decorators.decorators._stackable_under_task import (
+    current_task_context_and_renderer,
+    expect_dataset_urn_list,
 )
 from airflow.providers.standard.decorators.python import _PythonDecoratedOperator
 
@@ -30,6 +37,41 @@ if TYPE_CHECKING:
     from airflow.providers.common.compat.sdk import Context, TaskDecorator
 
 OnBreach = Literal["fail", "skip", "warn"]
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def contract_breach_guard(
+    *,
+    on_breach: OnBreach = "fail",
+    override_var: str | None = None,
+) -> Callable[[F], F]:
+    """
+    Wrap a callable that returns ``list[str]`` dataset URNs when stacked **under** plain ``@task``.
+
+    Runs :func:`~airflow.providers.data.contracts.contract_breach_runner.run_contract_breach_guard`
+    after the callable. Renders ``override_var`` with the outer task's Jinja environment.
+    """
+
+    def decorator(f: F) -> F:
+        @functools.wraps(f)
+        def wrapper(*args: Any, **kwargs: Any) -> None:
+            ctx, render = current_task_context_and_renderer()
+            task = ctx["task"]
+            r_override = render(override_var) if override_var is not None else None
+            urns = expect_dataset_urn_list(f(*args, **kwargs))
+
+            run_contract_breach_guard(
+                catalog_conn_id=YamlDataContractHook.default_conn_name,
+                dataset_urns=urns,
+                on_breach=on_breach,
+                override_var=r_override,
+                log=task.log,
+            )
+
+        return wrapper  # type: ignore[return-value]
+
+    return decorator
 
 
 class _ContractBreachGuardDecoratedOperator(_PythonDecoratedOperator):
@@ -47,14 +89,12 @@ class _ContractBreachGuardDecoratedOperator(_PythonDecoratedOperator):
         self,
         *,
         python_callable: Callable,
-        catalog_conn_id: str,
         on_breach: OnBreach = "fail",
         override_var: str | None = None,
         op_args: Any = None,
         op_kwargs: Any = None,
         **kwargs,
     ) -> None:
-        self.catalog_conn_id = catalog_conn_id
         self.on_breach = on_breach
         self.override_var = override_var
         super().__init__(
@@ -71,18 +111,15 @@ class _ContractBreachGuardDecoratedOperator(_PythonDecoratedOperator):
 
         bind_python_decorated_callable(self, context)
 
-        urns = self.execute_callable()
-        if self.show_return_value_in_logs:
-            self.log.info("Done. Returned value was: %s", urns)
-        else:
-            self.log.info("Done. Returned value not shown")
-
-        if not isinstance(urns, list) or not all(isinstance(u, str) for u in urns):
-            msg = f"Callable must return a list[str] of dataset URNs, got {type(urns).__name__}"
-            raise TypeError(msg)
+        urns = expect_dataset_urn_list(self.execute_callable())
+        log_python_callable_return_value(
+            self.log,
+            urns,
+            show_return_value=self.show_return_value_in_logs,
+        )
 
         run_contract_breach_guard(
-            catalog_conn_id=self.catalog_conn_id,
+            catalog_conn_id=YamlDataContractHook.default_conn_name,
             dataset_urns=urns,
             on_breach=self.on_breach,
             override_var=self.override_var,
@@ -101,6 +138,8 @@ def contract_breach_guard_task(
 
     Matches :class:`~airflow.providers.data.contracts.operators.contract_breach_guard.ContractBreachGuardOperator`
     with ``dataset_urns`` supplied by the callable.
+
+    For plain ``@task``, stack :func:`contract_breach_guard` on the callable (inner, ``@task`` outer).
 
     :param multiple_outputs: Must be ``False`` or omitted.
     """

@@ -18,6 +18,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from airflow.providers.data.contracts.exceptions import ContractResolutionError
+from airflow.providers.data.contracts.hooks.base_catalog import get_catalog_hook
 from airflow.providers.data.contracts.hooks.local_yaml import YamlDataContractHook
 
 
@@ -59,3 +63,49 @@ def test_get_contract_uses_extras_map(mock_get_conn, tmp_path):
     hook = YamlDataContractHook(catalog_conn_id="yaml_default")
     dc = hook.get_contract("urn:local:orders")
     assert dc.dataset_urn == "urn:local:orders"
+
+
+def test_yaml_hook_file_only_get_contract(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "dataset_urn: urn:local:orders\ndataset_name: orders\nversion: 1\nstatus: ACTIVE\nschema: []\n",
+        encoding="utf-8",
+    )
+    hook = YamlDataContractHook(contract_yaml_path=str(p))
+    assert hook.get_contract("urn:local:orders").dataset_name == "orders"
+
+
+def test_yaml_hook_file_only_urn_mismatch(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "dataset_urn: urn:local:orders\ndataset_name: orders\nversion: 1\nstatus: ACTIVE\nschema: []\n",
+        encoding="utf-8",
+    )
+    hook = YamlDataContractHook(contract_yaml_path=str(p))
+    with pytest.raises(ContractResolutionError, match="defines dataset_urn"):
+        hook.get_contract("urn:other")
+
+
+def test_yaml_hook_rejects_conn_and_path_together(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "dataset_urn: urn:local:orders\ndataset_name: orders\nversion: 1\nstatus: ACTIVE\nschema: []\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="only one of"):
+        YamlDataContractHook("yaml_default", contract_yaml_path=str(p))
+
+
+def test_get_catalog_hook_requires_source():
+    with pytest.raises(ValueError, match="catalog_conn_id or contract_yaml_path"):
+        get_catalog_hook()
+
+
+def test_get_catalog_hook_contract_yaml_path_only(tmp_path):
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "dataset_urn: urn:local:orders\ndataset_name: orders\nversion: 1\nstatus: ACTIVE\nschema: []\n",
+        encoding="utf-8",
+    )
+    hook = get_catalog_hook(contract_yaml_path=str(p))
+    assert hook.get_contract("urn:local:orders").dataset_name == "orders"

@@ -16,48 +16,33 @@
 # under the License.
 
 """
-Minimal data-contract DAG using **TaskFlow decorators** (single task: collect stats + validate).
+Minimal data-contract DAG using **TaskFlow decorators** (collect stats + validate).
 
-Same scenario as ``example/aip-07/minimal_standalone/dags/simple_data_contract.py``, but uses
-``contract_validate_task`` instead of ``@task`` + :class:`ContractValidateOperator`.
+Same scenario as ``example/aip-07/minimal_standalone/dags/simple_data_contract.py``.
+
+This DAG uses the stacked style: plain ``@task`` outer with inner ``@contract_validate``.
 
 Requires:
 
 * ``apache-airflow-providers-data-contracts``
 * ``apache-airflow-providers-data-contracts-decorators``
 
-``catalog_conn_id`` is unused when ``contract_yaml_path`` is set and
-``report_breach_to_catalog`` is false; a placeholder satisfies the operator API.
+The contract is resolved from the platform-managed catalog mapping for ``dataset_urn``.
 """
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 
 from airflow.providers.data.contracts_decorators.decorators.contract_validate import (
-    contract_validate_task,
+    contract_validate,
 )
-from airflow.sdk import DAG
+from airflow.sdk import DAG, task
 
-_EXAMPLE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONTRACT_YAML = os.path.join(_EXAMPLE_ROOT, "contracts", "sample_dataset.yaml")
 DATASET_URN = "urn:example:sample_dataset"
 
 
-@contract_validate_task(
-    catalog_conn_id="unused_local_yaml_only",
-    dataset_urn=DATASET_URN,
-    contract_yaml_path=CONTRACT_YAML,
-    validate_schema=True,
-    validate_completeness=True,
-    validate_freshness=False,
-    validate_sla=False,
-    report_breach_to_catalog=False,
-    task_id="validate_contract",
-)
-def validate_sample_dataset() -> dict:
-    """Return contract stats (same shape as the standalone ``build_contract_stats`` task)."""
+def _sample_stats() -> dict:
     return {
         "row_count": 3,
         "schema": [
@@ -65,6 +50,20 @@ def validate_sample_dataset() -> dict:
             {"name": "amount", "type": "FLOAT", "nullable": False},
         ],
     }
+
+
+@task
+@contract_validate(
+    dataset_urn=DATASET_URN,
+    validate_schema=True,
+    validate_completeness=True,
+    validate_freshness=False,
+    validate_sla=False,
+    report_breach_to_catalog=False,
+)
+def validate_sample_dataset() -> dict:
+    """Return contract stats for validation under ``@task`` + ``contract_validate``."""
+    return _sample_stats()
 
 
 with DAG(

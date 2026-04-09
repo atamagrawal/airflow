@@ -16,18 +16,71 @@
 # under the License.
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from airflow.providers.common.compat.sdk import task_decorator_factory
 from airflow.providers.data.contracts.contract_publish_runner import publish_contract_run
+from airflow.providers.data.contracts.hooks.local_yaml import YamlDataContractHook
 from airflow.providers.data.contracts_decorators.decorators._python_operator_execute import (
     bind_python_decorated_callable,
+    log_python_callable_return_value,
+)
+from airflow.providers.data.contracts_decorators.decorators._stackable_under_task import (
+    current_task_context_and_renderer,
+    expect_contract_stats_dict,
 )
 from airflow.providers.standard.decorators.python import _PythonDecoratedOperator
 
 if TYPE_CHECKING:
     from airflow.providers.common.compat.sdk import Context, TaskDecorator
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def contract_publish(
+    *,
+    dataset_urn: str,
+    upstream_urns: list[str] | None = None,
+    update_contract_status: bool = True,
+    contract_status: str = "ACTIVE",
+    emit_run_facet: bool = True,
+) -> Callable[[F], F]:
+    """
+    Wrap a stats callable when stacked **under** plain ``@task`` (apply bottom-up).
+
+    Runs :func:`~airflow.providers.data.contracts.contract_publish_runner.publish_contract_run` after
+    the callable. Renders string/list parameters with the outer task's Jinja environment.
+    """
+
+    def decorator(f: F) -> F:
+        @functools.wraps(f)
+        def wrapper(*args: Any, **kwargs: Any) -> None:
+            ctx, render = current_task_context_and_renderer()
+            r_urn = render(dataset_urn)
+            raw_upstream = list(upstream_urns) if upstream_urns else []
+            r_upstream = render(raw_upstream)
+            if not isinstance(r_upstream, list):
+                r_upstream = raw_upstream
+
+            stats = expect_contract_stats_dict(f(*args, **kwargs))
+            r_contract_status = render(contract_status)
+
+            publish_contract_run(
+                context=ctx,
+                catalog_conn_id=YamlDataContractHook.default_conn_name,
+                dataset_urn=r_urn,
+                upstream_urns=r_upstream,
+                stats=stats,
+                update_contract_status=update_contract_status,
+                contract_status=r_contract_status,
+                emit_run_facet=emit_run_facet,
+            )
+
+        return wrapper  # type: ignore[return-value]
+
+    return decorator
 
 
 class _ContractPublishDecoratedOperator(_PythonDecoratedOperator):
@@ -48,7 +101,6 @@ class _ContractPublishDecoratedOperator(_PythonDecoratedOperator):
         self,
         *,
         python_callable: Callable,
-        catalog_conn_id: str,
         dataset_urn: str,
         upstream_urns: list[str] | None = None,
         update_contract_status: bool = True,
@@ -58,7 +110,6 @@ class _ContractPublishDecoratedOperator(_PythonDecoratedOperator):
         op_kwargs: Any = None,
         **kwargs,
     ) -> None:
-        self.catalog_conn_id = catalog_conn_id
         self.dataset_urn = dataset_urn
         self.upstream_urns = upstream_urns or []
         self.update_contract_status = update_contract_status
@@ -78,19 +129,16 @@ class _ContractPublishDecoratedOperator(_PythonDecoratedOperator):
 
         bind_python_decorated_callable(self, context)
 
-        stats = self.execute_callable()
-        if self.show_return_value_in_logs:
-            self.log.info("Done. Returned value was: %s", stats)
-        else:
-            self.log.info("Done. Returned value not shown")
-
-        if not isinstance(stats, dict):
-            msg = f"Callable return value must be a contract stats dict, got {type(stats).__name__}"
-            raise TypeError(msg)
+        stats = expect_contract_stats_dict(self.execute_callable())
+        log_python_callable_return_value(
+            self.log,
+            stats,
+            show_return_value=self.show_return_value_in_logs,
+        )
 
         publish_contract_run(
             context=context,
-            catalog_conn_id=self.catalog_conn_id,
+            catalog_conn_id=YamlDataContractHook.default_conn_name,
             dataset_urn=self.dataset_urn,
             upstream_urns=self.upstream_urns,
             stats=stats,
@@ -111,6 +159,8 @@ def contract_publish_task(
 
     Matches :class:`~airflow.providers.data.contracts.operators.contract_publish.ContractPublishOperator`
     with ``stats_xcom_task_id`` replaced by the decorated function's return value.
+
+    For plain ``@task``, stack :func:`contract_publish` on the callable (inner, ``@task`` outer).
 
     :param multiple_outputs: Must be ``False`` or omitted.
     """

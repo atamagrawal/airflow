@@ -24,6 +24,7 @@ from airflow.providers.common.compat.sdk import AirflowException
 from airflow.providers.data.contracts.models.contract import DataContract, SchemaField
 from airflow.providers.data.contracts_decorators.decorators.contract_validate import (
     _ContractValidateDecoratedOperator,
+    contract_validate,
 )
 
 
@@ -52,7 +53,6 @@ def test_contract_validate_decorated_operator_success(sample_contract):
     op = _ContractValidateDecoratedOperator(
         task_id="validate",
         python_callable=load,
-        catalog_conn_id="datahub_default",
         dataset_urn="urn:x",
         validate_freshness=False,
         validate_sla=False,
@@ -83,7 +83,6 @@ def test_contract_validate_decorated_operator_fails_on_schema(sample_contract):
     op = _ContractValidateDecoratedOperator(
         task_id="validate",
         python_callable=load,
-        catalog_conn_id="datahub_default",
         dataset_urn="urn:x",
         validate_freshness=False,
         validate_sla=False,
@@ -101,3 +100,43 @@ def test_contract_validate_decorated_operator_fails_on_schema(sample_contract):
     ):
         with pytest.raises(AirflowException):
             op.execute(context)
+
+
+def test_contract_validate_stackable_runs_validate_after_body(sample_contract):
+    @contract_validate(
+        dataset_urn="urn:x",
+        validate_freshness=False,
+        validate_sla=False,
+        report_breach_to_catalog=False,
+    )
+    def load():
+        return {
+            "row_count": 5,
+            "schema": [{"name": "id", "type": "STRING", "nullable": False}],
+        }
+
+    mock_task = MagicMock()
+    mock_task.render_template.side_effect = lambda v, *a, **k: v
+    mock_task.get_template_env.return_value = MagicMock()
+    mock_task.task_id = "validate"
+    mock_task.log = MagicMock()
+    ti = MagicMock()
+    dag = MagicMock()
+    dag.dag_id = "dag1"
+    ctx = {"task": mock_task, "ti": ti, "dag": dag, "run_id": "run1", "dag_run": None}
+
+    mock_hook = MagicMock()
+    mock_hook.get_contract.return_value = sample_contract
+    mock_hook.report_breach.return_value = None
+
+    with (
+        patch(
+            "airflow.providers.data.contracts.contract_validate_runner.get_catalog_hook",
+            return_value=mock_hook,
+        ),
+        patch("airflow.sdk.get_current_context", return_value=ctx),
+    ):
+        out = load()
+
+    assert out["passed"] is True
+    ti.xcom_push.assert_called_once()
