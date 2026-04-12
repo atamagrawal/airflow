@@ -22,6 +22,6 @@ Implementation notes
 This directory holds **implementation documentation** for optional or experimental
 components that live outside the main Airflow core tree.
 
-* **UAPE (dev advisory CLI)** — ``uape/README.rst`` — serialized-DAG parallelization hints
-  (provider under ``dev/uape-provider/``), including **worked examples** of DAG shapes and
-  sample CLI/JSON output.
+* **UAPE (dev advisory)** — ``uape/README.rst`` — serialized-DAG parallelization hints
+  (provider under ``dev/uape-provider/``): CLI, JSON HTTP API for third-party apps, worked
+  examples, and implementation notes (no Airflow UI tabs).

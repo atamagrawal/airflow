@@ -15,29 +15,29 @@
 # specific language governing permissions and limitations
 # under the License.
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+"""
+Airflow plugin: mounts the UAPE read-only JSON API for external consumers.
 
-[project]
-name = "apache-airflow-dev-uape"
-version = "0.0.1"
-description = "Dev-only UAPE: parallelization advisory CLI and JSON HTTP API for external apps (read-only)."
-readme = "README.txt"
-requires-python = ">=3.10"
-license = "Apache-2.0"
-dependencies = [
-    "apache-airflow>=3.0.0",
-]
+No Airflow UI tabs or views are registered; third-party apps call ``/uape/...`` on the API server.
+"""
 
-[project.urls]
-Documentation = "https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html"
+from __future__ import annotations
 
-[project.entry-points."apache_airflow_provider"]
-provider_info = "airflow.providers.uape.get_provider_info:get_provider_info"
+from airflow.plugins_manager import AirflowPlugin
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/airflow/providers/uape"]
 
-[tool.hatch.build.targets.sdist]
-include = ["src/airflow/providers/uape", "README.txt"]
+def _uape_fastapi_metadata() -> dict:
+    from airflow.providers.uape.web.app import create_uape_app
+
+    return {
+        "app": create_uape_app(),
+        "url_prefix": "/uape",
+        "name": "UAPE advisory API",
+    }
+
+
+class UapeAdvisoryPlugin(AirflowPlugin):
+    """Registers HTTP JSON routes only (no Airflow UI integration)."""
+
+    name = "uape_advisory"
+    fastapi_apps = [_uape_fastapi_metadata()]

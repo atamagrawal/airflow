@@ -14,30 +14,3 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[project]
-name = "apache-airflow-dev-uape"
-version = "0.0.1"
-description = "Dev-only UAPE: parallelization advisory CLI and JSON HTTP API for external apps (read-only)."
-readme = "README.txt"
-requires-python = ">=3.10"
-license = "Apache-2.0"
-dependencies = [
-    "apache-airflow>=3.0.0",
-]
-
-[project.urls]
-Documentation = "https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html"
-
-[project.entry-points."apache_airflow_provider"]
-provider_info = "airflow.providers.uape.get_provider_info:get_provider_info"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/airflow/providers/uape"]
-
-[tool.hatch.build.targets.sdist]
-include = ["src/airflow/providers/uape", "README.txt"]

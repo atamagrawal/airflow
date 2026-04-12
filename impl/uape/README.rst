@@ -33,7 +33,8 @@ For broader product motivation and normative policy goals, see the design note i
 What it does
 ============
 
-The provider adds read-only CLI commands that:
+The provider adds read-only **CLI commands** and a **JSON HTTP API** (for third-party
+applications) that:
 
 1. Load the **latest serialized DAG** for a ``dag_id`` from the metadata database
    (``SerializedDagModel``).
@@ -72,6 +73,29 @@ All commands live under ``airflow uape``.
 ``airflow uape export <dag_id> [--format json]``
     Prints the full machine-readable report, including per-task classifications and the
     complete list of structurally independent pairs (with proofs).
+
+
+HTTP API for third-party applications
+=======================================
+
+The Airflow **UI does not** show UAPE recommendations. Instead, the provider registers an
+**Airflow plugin** (see ``plugins`` in ``get_provider_info``) that mounts a small **FastAPI**
+sub-application on the API server at ``/uape`` (must not collide with reserved prefixes such
+as ``/api/v2``).
+
+Endpoint (machine-readable, same payload as ``airflow uape export``):
+
+* ``GET /uape/dags/{dag_id}/recommendations.json`` — full JSON report, or ``404`` with
+  ``{"error": "..."}`` when the serialized DAG is missing.
+
+If ``[api] base_url`` is a subpath (for example ``https://host/airflow/``), prefix the path:
+``{path_from_base_url}/uape/dags/...``.
+
+Third-party apps should call this URL with the **same authentication** and transport rules
+they already use for the Airflow API (for example JWT or session cookies in front of the
+API server, depending on deployment).
+
+Restart the **API server** after installing or upgrading this package so the mount is active.
 
 
 Examples: how it behaves
@@ -260,11 +284,15 @@ The package is a normal **Apache Airflow provider** distribution:
 
 * ``pyproject.toml`` exposes ``[project.entry-points."apache_airflow_provider"]`` pointing
   at ``get_provider_info``.
-* ``get_provider_info`` returns minimal metadata including a ``cli`` list that names
-  ``airflow.providers.uape.cli.definition.get_uape_cli_commands``.
-* That function returns a ``GroupCommand`` named ``uape`` with the action commands above.
+* ``get_provider_info`` returns metadata including:
 
-Airflow's ``ProvidersManager`` merges these commands into the root CLI at startup.
+  * a ``cli`` list naming ``airflow.providers.uape.cli.definition.get_uape_cli_commands``
+    (which registers the ``airflow uape`` command group), and
+  * a ``plugins`` list naming ``airflow.providers.uape.plugins.uape_plugin.UapeAdvisoryPlugin``,
+    which registers only the FastAPI mount at ``/uape`` (no ``external_views`` / no Airflow UI tabs).
+
+Airflow's ``ProvidersManager`` merges CLI commands into the root CLI at startup and loads
+plugin classes so the API server exposes ``/uape`` for external HTTP clients.
 
 
 Non-goals and limitations
@@ -278,6 +306,7 @@ Non-goals and limitations
   the allowlist only with types whose contracts are genuinely bounded.
 * **Dev-only packaging** — the distribution name is prefixed with ``dev`` to signal that
   this is experimental / local tooling, not a published production provider.
+* **No Airflow UI integration** — nothing is injected into the React UI; only CLI and HTTP JSON.
 
 
 Related paths
