@@ -1,4 +1,4 @@
-# AIP-03-0002: Airflow Event-Driven Orchestration Layer
+# AIP-04: Airflow Event-Driven Orchestration Layer
 
 ## Status
 Draft
