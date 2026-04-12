@@ -12,4 +12,6 @@ Then:
 This is a normal Airflow provider distribution (apache_airflow_provider entry point),
 not a PLUGINS_FOLDER plugin. It does not change airflow-core.
 
+Implementation documentation: impl/uape/README.rst
+
 Optional background note in this repository: ideas/AIP-08-dag-optimizer-uncertainty-aware-parallelization.md
