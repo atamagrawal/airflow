@@ -1,5 +1,14 @@
 UAPE (Uncertainty-Aware Parallelization Engine) — advisory CLI with conservative defaults.
 
+The ``AirflowPlugin`` (``/uape`` HTTP mount and UI tabs) is registered with the ``airflow.plugins``
+entry point in ``pyproject.toml``. For Docker, use ``example/plugins/uape_plugin_loader.py`` copied
+into ``$AIRFLOW_HOME/plugins/`` (see ``example/Dockerfile``) so discovery does not depend on entry points.
+
+**FAB auth:** the UI loads plugin tabs from ``GET /api/v2/plugins``, which requires the **Plugins**
+permission. If tabs are missing, grant your role **can read** on **Plugins** (Admin has it by default).
+
+Restart the API server after install.
+
 Install into the same environment as Airflow (example from repo root):
 
   uv pip install -e dev/uape-provider
@@ -9,8 +18,12 @@ Then:
   airflow uape independence-report <dag_id> [--format text|json]
   airflow uape export <dag_id> [--format json]
 
-After restarting the API server, **external applications** (not the Airflow UI) can fetch
-the same report the CLI produces:
+After restarting the API server:
+
+* **Airflow UI:** plugin tab **UAPE recommendations** (iframe) on the DAG page, Dag Run page,
+  Task page, and Task Instance page. Each loads ``/uape/dags/{dag_id}/recommendations-ui`` (same
+  auth as the UI session).
+* **HTTP / CLI:** same report as ``airflow uape export``:
 
   GET {api_base}/uape/dags/{dag_id}/recommendations.json
 

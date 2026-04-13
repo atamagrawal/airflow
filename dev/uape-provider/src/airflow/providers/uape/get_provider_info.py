@@ -20,23 +20,18 @@ from __future__ import annotations
 
 def get_provider_info() -> dict:
     """
-    Return minimal provider metadata for the dev UAPE advisory distribution.
+    Return minimal provider metadata for the UAPE advisory distribution.
 
-    Registers CLI commands and an Airflow plugin (FastAPI JSON API only; no Airflow UI) via
-    ``apache_airflow_provider``.
+    CLI is registered here (``apache_airflow_provider``). The ``AirflowPlugin`` is loaded via the
+    ``airflow.plugins`` entry point in ``pyproject.toml`` so it works when ``lazy_discover_providers``
+    is left at the default ``True`` (provider-only ``plugins`` metadata would not load then).
     """
     return {
-        "package-name": "apache-airflow-dev-uape",
+        "package-name": "apache-airflow-providers-uape",
         "name": "Dev UAPE advisory",
         "description": (
             "Read-only uncertainty-aware parallelization hints (UAPE) from serialized DAG structure only; "
-            "CLI plus a JSON HTTP API on the API server for external applications. Does not execute user task code."
+            "CLI, JSON HTTP API, and an optional Airflow UI DAG tab (plugin iframe). Does not execute user task code."
         ),
         "cli": ["airflow.providers.uape.cli.definition.get_uape_cli_commands"],
-        "plugins": [
-            {
-                "name": "uape_advisory",
-                "plugin-class": "airflow.providers.uape.plugins.uape_plugin.UapeAdvisoryPlugin",
-            }
-        ],
     }

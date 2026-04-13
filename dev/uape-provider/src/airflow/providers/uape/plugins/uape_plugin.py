@@ -16,14 +16,16 @@
 # under the License.
 
 """
-Airflow plugin: mounts the UAPE read-only JSON API for external consumers.
+Airflow plugin: mounts the UAPE read-only API and UI tabs (iframe) on DAG-related screens.
 
-No Airflow UI tabs or views are registered; third-party apps call ``/uape/...`` on the API server.
+``url_route`` values must be unique across all plugins (Airflow deduplicates globally).
 """
 
 from __future__ import annotations
 
 from airflow.plugins_manager import AirflowPlugin
+
+_UAPE_IFRAME_HREF = "/uape/dags/{DAG_ID}/recommendations-ui"
 
 
 def _uape_fastapi_metadata() -> dict:
@@ -37,7 +39,33 @@ def _uape_fastapi_metadata() -> dict:
 
 
 class UapeAdvisoryPlugin(AirflowPlugin):
-    """Registers HTTP JSON routes only (no Airflow UI integration)."""
+    """Registers FastAPI routes under ``/uape`` and plugin tabs wherever the DAG context exists in the UI."""
 
     name = "uape_advisory"
     fastapi_apps = [_uape_fastapi_metadata()]
+    external_views = [
+        {
+            "name": "UAPE recommendations",
+            "destination": "dag",
+            "url_route": "uape-recommendations",
+            "href": _UAPE_IFRAME_HREF,
+        },
+        {
+            "name": "UAPE recommendations",
+            "destination": "dag_run",
+            "url_route": "uape-recommendations-run",
+            "href": _UAPE_IFRAME_HREF,
+        },
+        {
+            "name": "UAPE recommendations",
+            "destination": "task",
+            "url_route": "uape-recommendations-task",
+            "href": _UAPE_IFRAME_HREF,
+        },
+        {
+            "name": "UAPE recommendations",
+            "destination": "task_instance",
+            "url_route": "uape-recommendations-ti",
+            "href": _UAPE_IFRAME_HREF,
+        },
+    ]

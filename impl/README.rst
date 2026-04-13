@@ -24,4 +24,4 @@ components that live outside the main Airflow core tree.
 
 * **UAPE (dev advisory)** — ``uape/README.rst`` — serialized-DAG parallelization hints
   (provider under ``dev/uape-provider/``): CLI, JSON HTTP API for third-party apps, worked
-  examples, and implementation notes (no Airflow UI tabs).
+  examples, implementation notes, and an optional UI tab via the provider plugin (iframe).

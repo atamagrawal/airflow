@@ -42,6 +42,7 @@ export const TaskInstance = () => {
 
   const tabs = [
     { icon: <MdReorder />, label: translate("tabs.logs"), value: "" },
+    ...externalTabs,
     { icon: <FiUser />, label: translate("tabs.requiredActions"), value: "required_actions" },
     {
       icon: <PiBracketsCurlyBold />,
@@ -53,7 +54,6 @@ export const TaskInstance = () => {
     { icon: <MdOutlineEventNote />, label: translate("tabs.auditLog"), value: "events" },
     { icon: <FiCode />, label: translate("tabs.code"), value: "code" },
     { icon: <MdDetails />, label: translate("tabs.details"), value: "details" },
-    ...externalTabs,
   ];
 
   const refetchInterval = useAutoRefresh({ dagId });

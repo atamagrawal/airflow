@@ -23,7 +23,7 @@ This note documents the **Uncertainty-Aware Parallelization Engine (UAPE)** advi
 implementation shipped as an optional **development** provider. It is **not** part of
 ``apache-airflow`` core; it does not change scheduling.
 
-Code location: ``dev/uape-provider/`` (distribution name ``apache-airflow-dev-uape``,
+Code location: ``dev/uape-provider/`` (distribution name ``apache-airflow-providers-uape``,
 import path ``airflow.providers.uape``).
 
 For broader product motivation and normative policy goals, see the design note in
@@ -47,6 +47,18 @@ applications) that:
 
 No user operator code, callbacks, or task bodies are executed. Only serialized metadata
 is used.
+
+
+Troubleshooting: no UI tab or ``404`` on ``/uape``
+=================================================
+
+UAPE registers its ``AirflowPlugin`` through the **``airflow.plugins``** distribution entry point
+(see ``pyproject.toml``), so it is loaded on API/web startup even when
+``[core] lazy_discover_providers`` is ``True``. If tabs are still missing, confirm the package is
+installed, restart the API server, and check logs for plugin import errors.
+
+Older notes about setting ``lazy_discover_providers`` to ``False`` apply only to plugins that are
+declared solely via ``get_provider_info`` → ``plugins`` (not used for UAPE anymore).
 
 
 Installation
@@ -78,15 +90,22 @@ All commands live under ``airflow uape``.
 HTTP API for third-party applications
 =======================================
 
-The Airflow **UI does not** show UAPE recommendations. Instead, the provider registers an
-**Airflow plugin** (see ``plugins`` in ``get_provider_info``) that mounts a small **FastAPI**
-sub-application on the API server at ``/uape`` (must not collide with reserved prefixes such
-as ``/api/v2``).
+The distribution registers an **Airflow plugin** (``airflow.plugins`` entry point →
+``UapeAdvisoryPlugin``) that mounts a small **FastAPI** sub-application on the API server at
+``/uape`` (must not collide with reserved prefixes such as ``/api/v2``).
 
-Endpoint (machine-readable, same payload as ``airflow uape export``):
+**Airflow UI:** the plugin declares ``external_view`` entries with ``destination`` set to
+``dag``, ``dag_run``, ``task``, and ``task_instance`` (each with a distinct ``url_route``), so a
+**UAPE recommendations** tab appears on the main DAG screen, the Dag Run screen, the Task screen,
+and the Task Instance screen. Each tab loads an iframe pointing at
+``/uape/dags/{dag_id}/recommendations-ui`` (HTML shell that fetches the JSON report with the same
+session cookies as the UI).
+
+Endpoints:
 
 * ``GET /uape/dags/{dag_id}/recommendations.json`` — full JSON report, or ``404`` with
-  ``{"error": "..."}`` when the serialized DAG is missing.
+  ``{"error": "..."}`` when the serialized DAG is missing (same payload as ``airflow uape export``).
+* ``GET /uape/dags/{dag_id}/recommendations-ui`` — HTML page for the UI plugin tab.
 
 If ``[api] base_url`` is a subpath (for example ``https://host/airflow/``), prefix the path:
 ``{path_from_base_url}/uape/dags/...``.
@@ -283,16 +302,13 @@ Provider wiring
 The package is a normal **Apache Airflow provider** distribution:
 
 * ``pyproject.toml`` exposes ``[project.entry-points."apache_airflow_provider"]`` pointing
-  at ``get_provider_info``.
-* ``get_provider_info`` returns metadata including:
+  at ``get_provider_info`` (CLI metadata), and ``[project.entry-points."airflow.plugins"]`` pointing
+  at ``UapeAdvisoryPlugin`` (FastAPI mount and UI ``external_views``).
+* ``get_provider_info`` returns metadata including a ``cli`` list naming
+  ``airflow.providers.uape.cli.definition.get_uape_cli_commands`` (the ``airflow uape`` group).
 
-  * a ``cli`` list naming ``airflow.providers.uape.cli.definition.get_uape_cli_commands``
-    (which registers the ``airflow uape`` command group), and
-  * a ``plugins`` list naming ``airflow.providers.uape.plugins.uape_plugin.UapeAdvisoryPlugin``,
-    which registers only the FastAPI mount at ``/uape`` (no ``external_views`` / no Airflow UI tabs).
-
-Airflow's ``ProvidersManager`` merges CLI commands into the root CLI at startup and loads
-plugin classes so the API server exposes ``/uape`` for external HTTP clients.
+``plugins_manager`` loads entry-point plugins on API/web startup so ``/uape`` and UI tabs are
+available without disabling ``lazy_discover_providers``.
 
 
 Non-goals and limitations
@@ -304,9 +320,10 @@ Non-goals and limitations
   edges are out of scope; the caveat in overlap hints reminds authors to verify.
 * **Narrow clear allowlist** — most real tasks are opaque for reporting purposes; expand
   the allowlist only with types whose contracts are genuinely bounded.
-* **Dev-only packaging** — the distribution name is prefixed with ``dev`` to signal that
-  this is experimental / local tooling, not a published production provider.
-* **No Airflow UI integration** — nothing is injected into the React UI; only CLI and HTTP JSON.
+* **In-repo packaging** — lives under ``dev/uape-provider/`` as local/experimental tooling, not a
+  published Apache community provider.
+* **Airflow UI** — a plugin tab (iframe) is registered via ``external_views``; there is no fork of
+  the core React bundle. CLI and JSON HTTP remain available.
 
 
 Related paths
