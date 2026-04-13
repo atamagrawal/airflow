@@ -181,10 +181,31 @@
     "runs": "Runs",
     "taskInstances": "Task Instances",
     "tasks": "Tasks",
+    "uapeRecommendations": "UAPE",
     "xcom": "XCom"
   },
   "taskGroups": {
     "collapseAll": "Collapse all task groups",
     "expandAll": "Expand all task groups"
+  },
+  "uape": {
+    "abstainReason": "Reason",
+    "abstentions": "Abstentions (opaque tasks)",
+    "advisoryDescription": "These recommendations are based on the serialized DAG structure only. No user task code is executed. Confirm hidden dependencies before changing task ordering.",
+    "advisoryTitle": "Advisory Only",
+    "caveat": "Caveat",
+    "clearAllowlist": "Clear Operator Allowlist",
+    "noOverlapHints": "No overlap hints — all independent pairs involve at least one opaque task, or no structurally independent pairs exist.",
+    "opacity": "Opacity",
+    "overlapHints": "Parallelization Recommendations",
+    "policy": "Policy",
+    "proof": "Proof",
+    "reason": "Reason",
+    "taskClassifications": "Task Classifications",
+    "taskId": "Task ID",
+    "taskPair": "Task Pair",
+    "taskType": "Task Type",
+    "unavailableDescription": "UAPE recommendations are not available. Ensure the UAPE provider is installed and the DAG is serialized.",
+    "unavailableTitle": "UAPE Not Available"
   }
 }

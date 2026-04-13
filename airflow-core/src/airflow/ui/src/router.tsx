@@ -34,6 +34,7 @@ import { Code } from "src/pages/Dag/Code";
 import { Details as DagDetails } from "src/pages/Dag/Details";
 import { Overview } from "src/pages/Dag/Overview";
 import { Tasks } from "src/pages/Dag/Tasks";
+import { UapeRecommendations } from "src/pages/Dag/UapeRecommendations";
 import { DagRuns } from "src/pages/DagRuns";
 import { DagsList } from "src/pages/DagsList";
 import { Dashboard } from "src/pages/Dashboard";
@@ -173,6 +174,7 @@ export const routerConfig = [
           { element: <Events />, path: "events" },
           { element: <Code />, path: "code" },
           { element: <DagDetails />, path: "details" },
+          { element: <UapeRecommendations />, path: "uape" },
           pluginRoute,
         ],
         element: <Dag />,
