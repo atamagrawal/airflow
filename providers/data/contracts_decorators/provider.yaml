@@ -1,0 +1,45 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+---
+package-name: apache-airflow-providers-data-contracts-decorators
+name: Data contracts decorators
+description: |
+  TaskFlow decorators for data contract operators and sensors; requires ``apache-airflow-providers-data-contracts``.
+
+state: not-ready
+lifecycle: incubation
+source-date-epoch: 1774299332
+versions:
+  - 1.0.0
+
+integrations:
+  - integration-name: Data contracts decorators
+    external-doc-url: https://airflow.apache.org/docs/apache-airflow-providers-data-contracts/
+    tags: [service]
+
+task-decorators:
+  - class-name: airflow.providers.data.contracts_decorators.decorators.contract_validate.contract_validate_task
+    name: contract_validate
+  - class-name: airflow.providers.data.contracts_decorators.decorators.contract_publish.contract_publish_task
+    name: contract_publish
+  - class-name: airflow.providers.data.contracts_decorators.decorators.contract_breach_guard.contract_breach_guard_task
+    name: contract_breach_guard
+  - class-name: airflow.providers.data.contracts_decorators.decorators.contract_ready.contract_ready_task
+    name: contract_ready
+  - class-name: airflow.providers.data.contracts_decorators.decorators.contract_trigger_user_guard.contract_trigger_user_guard_task
+    name: contract_trigger_user_guard
