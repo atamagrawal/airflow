@@ -23,30 +23,26 @@
 #
 # Build from the **repository root** (the directory that contains ``providers/``):
 #
-#   docker build -f example/aip-07/Dockerfile -t airflow-aip07-data-contracts:latest .
+#   docker build -f example/Dockerfile -t atamagrawal/airflow:3.2.0-v1 .
 #
-# Tag and push to Docker Hub (repository ``atamagrawal/airflow``; pick your own tag):
+# Push to Docker Hub (repository ``atamagrawal/airflow``; pick your own tag):
 #
-#   docker tag airflow-aip07-data-contracts:latest atamagrawal/airflow:aip07-data-contracts-3.1.8
-#   docker push atamagrawal/airflow:aip07-data-contracts-3.1.8
+#   docker push atamagrawal/airflow:3.2.0-v1
 #
-# Point your docker-compose quick-start at this image, for example in ``.env``:
+# Point your docker-compose quick-start at this image (after ``docker build`` or ``docker pull``), for
+# example in ``.env``:
 #
-#   AIRFLOW_IMAGE_NAME=atamagrawal/airflow:aip07-data-contracts-3.1.8
-#
-# Or a locally built tag only:
-#
-#   AIRFLOW_IMAGE_NAME=airflow-aip07-data-contracts:latest
+#   AIRFLOW_IMAGE_NAME=atamagrawal/airflow:3.2.0-v1
 #
 # Or uncomment ``build: .`` next to your compose file and set ``context`` to the repo root with this
 # file as ``dockerfile`` (see https://airflow.apache.org/docs/docker-stack/build.html ).
 #
-# ``AIRFLOW_IMAGE_TAG`` — ``apache/airflow`` image tag (e.g. ``3.1.8`` or ``3.1.8-python3.12``).
+# ``AIRFLOW_IMAGE_TAG`` — ``apache/airflow`` image tag (e.g. ``3.2.0`` or ``3.2.0-python3.12``).
 # ``AIRFLOW_VERSION`` — semver for ``pip install apache-airflow==...`` (use ``X.Y.Z`` only, no suffix).
-# Override at build time: ``docker build --build-arg AIRFLOW_VERSION=3.1.8 --build-arg AIRFLOW_IMAGE_TAG=3.1.8-python3.12 ...``
+# Override at build time: ``docker build --build-arg AIRFLOW_VERSION=3.2.0 --build-arg AIRFLOW_IMAGE_TAG=3.2.0-python3.12 ...``
 
-ARG AIRFLOW_IMAGE_TAG=3.1.8
-ARG AIRFLOW_VERSION=3.1.8
+ARG AIRFLOW_IMAGE_TAG=3.2.0
+ARG AIRFLOW_VERSION=3.2.0
 
 FROM apache/airflow:${AIRFLOW_IMAGE_TAG}
 
