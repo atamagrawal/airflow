@@ -21,6 +21,10 @@
 # and **data contracts decorators** package (TaskFlow annotations), which are not on PyPI
 # while these providers are incubating.
 #
+# Also installs the in-repo **UAPE** dev provider (``dev/uape-provider``): CLI ``airflow uape``,
+# ``/uape`` HTTP routes, and UI tabs **UAPE recommendations** on DAG / Dag Run / Task / TI pages
+# (requires **Plugins** read permission for tab metadata). Restart the API server after rebuild.
+#
 # Build from the **repository root** (the directory that contains ``providers/``):
 #
 #   docker build -f example/Dockerfile -t atamagrawal/airflow:3.2.0-v1 .
@@ -53,10 +57,12 @@ USER root
 
 COPY providers/data/contracts /tmp/apache-airflow-providers-data-contracts
 COPY providers/data/contracts_decorators /tmp/apache-airflow-providers-data-contracts-decorators
+COPY dev/uape-provider /tmp/apache-airflow-providers-uape
 
 # COPY is root-owned; the airflow user cannot ``rm`` that tree afterward unless we chown first.
 RUN chown -R airflow:root /tmp/apache-airflow-providers-data-contracts
 RUN chown -R airflow:root /tmp/apache-airflow-providers-data-contracts-decorators
+RUN chown -R airflow:root /tmp/apache-airflow-providers-uape
 
 USER airflow
 
@@ -67,5 +73,7 @@ RUN pip install --no-cache-dir \
     "apache-airflow-providers-common-compat>=1.14.1" \
     /tmp/apache-airflow-providers-data-contracts \
     /tmp/apache-airflow-providers-data-contracts-decorators \
+    /tmp/apache-airflow-providers-uape \
     && rm -rf /tmp/apache-airflow-providers-data-contracts \
-        /tmp/apache-airflow-providers-data-contracts-decorators
+        /tmp/apache-airflow-providers-data-contracts-decorators \
+        /tmp/apache-airflow-providers-uape

@@ -37,14 +37,15 @@ export const Run = () => {
   // Get external views with dag_run destination
   const externalTabs = usePluginTabs("dag_run");
 
+  // DAG-run-scoped plugin tabs (e.g. UAPE) next to the primary run views.
   const tabs = [
     { icon: <MdOutlineTask />, label: translate("tabs.taskInstances"), value: "" },
+    ...externalTabs,
     { icon: <FiUser />, label: translate("tabs.requiredActions"), value: "required_actions" },
     { icon: <FiDatabase />, label: translate("tabs.assetEvents"), value: "asset_events" },
     { icon: <MdOutlineEventNote />, label: translate("tabs.auditLog"), value: "events" },
     { icon: <FiCode />, label: translate("tabs.code"), value: "code" },
     { icon: <MdDetails />, label: translate("tabs.details"), value: "details" },
-    ...externalTabs,
   ];
 
   const refetchInterval = useAutoRefresh({ dagId });
