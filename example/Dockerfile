@@ -22,8 +22,16 @@
 # while these providers are incubating.
 #
 # Also installs the in-repo **UAPE** dev provider (``dev/uape-provider``): CLI ``airflow uape``,
-# ``/uape`` HTTP routes, and UI tabs **UAPE recommendations** on DAG / Dag Run / Task / TI pages
-# (requires **Plugins** read permission for tab metadata). Restart the API server after rebuild.
+# ``/uape`` HTTP routes, and a **Recommendations**-category view named **Parallel overlap** on DAG /
+# Dag Run / Task / TI pages (requires **Plugins** read permission for tab metadata). Restart the API
+# server after rebuild.
+#
+# Tab grouping by plugin ``category`` (one parent **Recommendations** tab, per-view ``name`` in
+# sub-nav when multiple views share the category) requires the **web UI shipped with this repository**,
+# not only the PyPI ``apache/airflow`` wheel inside this image. This Dockerfile extends ``apache/airflow:*``,
+# so match your Airflow version to a UI that exposes ``category`` grouping, or build
+# ``airflow-core/src/airflow/ui`` (``pnpm run build``) and copy ``dist`` over the image's
+# ``.../site-packages/airflow/ui/dist`` (see Breeze ``scripts/ci/docker-compose/mount-ui-dist.yml``).
 #
 # Build from the **repository root** (the directory that contains ``providers/``):
 #

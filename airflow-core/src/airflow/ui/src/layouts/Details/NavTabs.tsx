@@ -23,7 +23,7 @@ import { NavLink } from "react-router-dom";
 import { useContainerWidth } from "src/utils";
 
 type Props = {
-  readonly tabs: Array<{ icon?: ReactNode; label: string; value: string }>;
+  readonly tabs: Array<{ icon?: ReactNode; label: string; navLinkEnd?: boolean; value: string }>;
 };
 
 export const NavTabs = ({ tabs }: Props) => {
@@ -38,9 +38,9 @@ export const NavTabs = ({ tabs }: Props) => {
       mb={2}
       ref={containerRef}
     >
-      {tabs.map(({ icon, label, value }) => (
+      {tabs.map(({ icon, label, navLinkEnd, value }) => (
         <NavLink
-          end
+          end={navLinkEnd ?? true}
           key={value}
           title={label}
           to={{

@@ -29,16 +29,28 @@ ARG_UAPE_FORMAT = Arg(
     type=str.lower,
 )
 
+ARG_EXTRA_CLEAR_TYPES = Arg(
+    ("--extra-clear-types",),
+    help=(
+        "Comma-separated list of additional operator type names to treat as 'clear' (T3 tier, "
+        "confidence=medium) for this invocation. Supplements the built-in T1/T2 allowlists and "
+        "the UAPE_EXTRA_CLEAR_OPERATOR_TYPES environment variable. "
+        "Example: --extra-clear-types MyCustomOperator,AnotherOperator"
+    ),
+    default="",
+    type=str,
+)
+
 
 UAPE_COMMANDS = (
     ActionCommand(
         name="independence-report",
         help=(
-            "List structurally independent task pairs; overlap hints only when both tasks are "
-            "on the conservative clear allowlist"
+            "List structurally independent task pairs; overlap hints for tasks on the clear allowlist "
+            "(T1: trivial, T2: computation, T3: user-extended)"
         ),
         func=lazy_load_command("airflow.providers.uape.cli.commands.uape_independence_report"),
-        args=(ARG_DAG_ID, ARG_UAPE_FORMAT),
+        args=(ARG_DAG_ID, ARG_UAPE_FORMAT, ARG_EXTRA_CLEAR_TYPES),
     ),
     ActionCommand(
         name="export",
@@ -47,6 +59,7 @@ UAPE_COMMANDS = (
         args=(
             ARG_DAG_ID,
             Arg(("--format",), help="Only json is supported", choices=["json"], default="json"),
+            ARG_EXTRA_CLEAR_TYPES,
         ),
     ),
 )

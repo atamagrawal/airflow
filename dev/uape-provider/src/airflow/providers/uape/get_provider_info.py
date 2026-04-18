@@ -30,8 +30,8 @@ def get_provider_info() -> dict:
         "package-name": "apache-airflow-providers-uape",
         "name": "Dev UAPE advisory",
         "description": (
-            "Read-only uncertainty-aware parallelization hints (UAPE) from serialized DAG structure only; "
-            "CLI, JSON HTTP API, and an optional Airflow UI DAG tab (plugin iframe). Does not execute user task code."
+            "Read-only UAPE parallelization advisory from serialized DAGs: versioned JSON reports "
+            "(metrics, confidence, limits), CLI export, HTTP API, and optional UI iframe. Does not execute user task code."
         ),
         "cli": ["airflow.providers.uape.cli.definition.get_uape_cli_commands"],
     }

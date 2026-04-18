@@ -166,6 +166,9 @@
     }
   },
   "tabs": {
+    "pluginCategory": {
+      "recommendations": "Recommendations"
+    },
     "assetEvents": "Asset Events",
     "auditLog": "Audit Log",
     "backfills": "Backfills",

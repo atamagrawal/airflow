@@ -59,7 +59,7 @@ not from correlation in logs.
 
 ## Conservative parallelization policy (normative)
 
-These rules define v1 behavior.
+These rules define the current behavior (policy `conservative_v2`).
 
 1. **Structural independence (required for any parallel recommendation)**  
    Tasks *A* and *B* may be recommended to run in parallel **only if** the serialized
@@ -75,21 +75,42 @@ These rules define v1 behavior.
    - does **not** recommend changing order relative to upstream/downstream tasks;
    - may still report duration stats **without** implying safe reordering.
 
-   Examples of operators that default to opaque unless explicitly annotated:
-   `BashOperator`, `PythonOperator` / `@task` with arbitrary user code, `DockerOperator`
-   running opaque images, and similar "runs a script" patterns.
+   Operators not on the clear allowlist (see §3) are **opaque** by default: e.g.
+   `DockerOperator`, cloud-provider operators, and any unknown or custom operator type.
 
-3. **Clear tasks (structure-only reasoning allowed)**  
-   Operators whose **declared** inputs/outputs are the only contract Airflow needs
-   (e.g., many SQL operators against declared connections, or tasks explicitly marked
-   `structure_only=True` TBD) may participate in **parallelism surfacing** between
-   siblings that are already independent in the graph — UAPE only **highlights** safe
-   overlap, it does not invent new edges.
+3. **Clear tasks — tiered allowlist (structure-only reasoning allowed)**  
+   The clear allowlist is split into three tiers. UAPE generates overlap hints only
+   when **both** tasks in an independent pair are clear; hint confidence reflects the
+   lower tier of the two.
+
+   | Tier | Label | Confidence | Examples |
+   |------|-------|------------|---------|
+   | T1 | `t1_trivial` | `high` | `EmptyOperator`, `DummyOperator`, `LatestOnlyOperator` |
+   | T2 | `t2_computation` | `medium_high` | `PythonOperator`, `BashOperator`, `TimeSensor`, `BranchPythonOperator`, `ShortCircuitOperator`, `TriggerDagRunOperator`, `ExternalTaskSensor`, … |
+   | T3 | `t3_user_extended` | `medium` | Any operator type supplied by the caller (see below) |
+
+   T2 operators such as `PythonOperator` and `BashOperator` are classified as clear
+   because they have no *inherent* shared external state — but their actual side effects
+   depend on user-supplied callables. The `medium_high` confidence and per-hint caveat
+   remind authors to verify before relying on parallel execution.
+
+   **User-extensibility (T3):** DAG authors and platform operators can promote additional
+   operator types to the clear allowlist without modifying the package:
+
+   - Set the `UAPE_EXTRA_CLEAR_OPERATOR_TYPES` environment variable (comma-separated)
+     for a persistent process/container-level override.
+   - Pass `--extra-clear-types Op1,Op2` to `airflow uape independence-report` or
+     `airflow uape export` for a per-invocation override (suppresses env-var lookup).
+   - Pass `extra_clear_types={"Op1"}` to `analyze_serialized_dag()` in Python.
+
+   T3 types get `confidence: "medium"` to signal that UAPE has not analysed their
+   semantics; the structural independence proof is identical to T1/T2.
 
 4. **Uncertainty = abstain**  
    If classification is unknown or mixed within a task group, **abstain**: no
    structural recommendation that would change ordering or introduce new concurrent
-   edges across the uncertain region.
+   edges across the uncertain region. Independent pairs involving at least one opaque
+   task appear under `abstained_parallel_hints` (reference only — not recommendations).
 
 ---
 
@@ -100,21 +121,28 @@ These rules define v1 behavior.
    parallel under Airflow's normal scheduler — restricted to regions where all
    involved tasks are **not** opaque.
 
-2. **Opaque vs clear classification**: Pluggable rules (operator type, DAG author
-   tags, allow/deny lists) to label tasks opaque or clear; default conservative.
+2. **Opaque vs clear classification with tiered confidence**: Operator types are
+   assigned to T1 (trivial), T2 (computation), or T3 (user-extended) tiers.
+   Unknown types default to opaque. Hint confidence reflects the lower tier of each
+   pair: both T1 → `high`; T1+T2 or T2+T2 → `medium_high`; any T3 → `medium`.
 
-3. **Advisory outputs** (v1): CLI / UI / API that report "these tasks are already
+3. **Advisory outputs**: CLI / UI / API that report "these tasks are already
    independent; your file over-serializes them" **only** when policy (1)–(4) pass;
    otherwise output **no change** or "manual review required."
 
-4. **Optional metrics** (non-binding): Historical duration or pool wait histograms
+4. **User-extensibility**: Platform operators and DAG authors can promote additional
+   operator types to the clear allowlist (T3) without modifying the package, via an
+   environment variable or CLI flag.
+
+5. **Optional metrics** (non-binding): Historical duration or pool wait histograms
    for **what-if** text ("if you refactor edges yourself, rough time saved") —
    clearly separated from **safety** recommendations.
 
-5. **Observability**: For every recommendation, cite **graph proof** (which paths
-   are absent). For abstentions, cite **opaque** or **unknown** classification.
+6. **Observability**: For every recommendation, cite **graph proof** (which paths
+   are absent) and **tier + confidence**. For abstentions, cite **opaque** or
+   **unknown** classification.
 
-6. **Integration touchpoints**: Read serialized DAG + TaskInstance metadata; no
+7. **Integration touchpoints**: Read serialized DAG + TaskInstance metadata; no
    execution of user task code.
 
 ## Non-Goals
@@ -124,6 +152,9 @@ These rules define v1 behavior.
 - Replacing the Airflow scheduler; optional hints must not weaken declared semantics
 - Parallelizing through an opaque task by speculating that scripts "probably" do not
   conflict
+- Automatically inferring hidden dependencies from task bodies (file I/O, shared DBs,
+  undeclared XCom usage) — these remain the author's responsibility; each hint carries
+  a caveat to this effect
 
 ---
 
@@ -135,24 +166,35 @@ Single source of truth: **Airflow's serialized dependency graph** (and dynamic m
 edges where already resolved for a run). No parallel suggestion without a **proof**
 of non-comparability in this graph among **clear** tasks only.
 
-### 2. Opacity (opaque vs clear)
+### 2. Opacity (opaque vs clear) and tiers
 
 - **Opaque**: static analysis cannot bound side effects; **do not change order** or
   suggest new parallelism involving breaking serial chains that include them.
-- **Clear**: bounded contract (or explicit author opt-in) so only declared deps matter
-  for safety of sibling parallelism **reports**.
+  Examples: `DockerOperator`, cloud-provider operators, any unknown operator type.
+- **Clear (T1 — trivial)**: operators with no external I/O (`EmptyOperator`,
+  `DummyOperator`, `LatestOnlyOperator`); confidence `high`.
+- **Clear (T2 — computation)**: common Airflow operators with no *inherent* shared
+  external state (`PythonOperator`, `BashOperator`, `TimeSensor`,
+  `BranchPythonOperator`, etc.); confidence `medium_high`. Their actual side effects
+  depend on user callables; the caveat in each hint and the downgraded confidence
+  communicate this.
+- **Clear (T3 — user-extended)**: operator types explicitly promoted by the caller via
+  the `UAPE_EXTRA_CLEAR_OPERATOR_TYPES` env var or `--extra-clear-types` CLI flag;
+  confidence `medium`.
 
-Exact taxonomy and opt-in API (`@task(structure_only=True)` or DAG-level YAML) are
-implementation details to be agreed during design review.
+Hint confidence equals the lower tier's label: both T1 → `high`; T1+T2 or both T2 →
+`medium_high`; any T3 → `medium`. Mapped operators are always opaque regardless of tier.
 
 ### 3. What "uncertainty-aware" means in this AIP
 
 | Situation | Engine behavior |
 |---|---|
-| Independent in graph, all clear | May recommend "safe to parallelize / you serialized unnecessarily" |
-| Independent in graph but opaque sibling in scope | Abstain or scope recommendation to clear subgraph only |
+| Independent in graph, both T1 clear | Recommend; confidence `high` |
+| Independent in graph, both T2 clear | Recommend; confidence `medium_high` |
+| Independent in graph, one or both T3 | Recommend; confidence `medium` |
+| Independent in graph, at least one opaque | Abstain; record in `abstained_parallel_hints` (reference only) |
 | Dependent in graph | Never recommend parallel |
-| Hidden dependency suspected (no graph edge) | Out of scope — **do not** parallelize; docs warn author |
+| Hidden dependency (no graph edge) | Out of scope — **do not** parallelize; caveat in every hint warns author |
 
 ### 4. Optional secondary use: duration / pool reporting
 
@@ -191,14 +233,21 @@ declared dependencies and must not run opaque regions out of author order.
 
 ## User Experience
 
-### CLI (illustrative)
+### CLI (current implementation)
 
 ```bash
-# List structurally independent task pairs (clear tasks only; proof in output)
-airflow dag optimize independence-report my_dag_id --format text
+# List structurally independent task pairs (clear tasks only; tiered confidence + proof)
+airflow uape independence-report my_dag_id --format text
 
-# JSON with graph citations + opaque classification per task
-airflow dag optimize export my_dag_id --format json
+# Promote a custom operator type to the T3 clear tier for this run
+airflow uape independence-report my_dag_id --extra-clear-types MyCustomOperator
+
+# Promote permanently for a process/container
+export UAPE_EXTRA_CLEAR_OPERATOR_TYPES="MyCustomOperator,AnotherOperator"
+airflow uape independence-report my_dag_id
+
+# Full JSON export (all classifications, proofs, hints, abstentions, tier breakdown)
+airflow uape export my_dag_id --format json
 ```
 
 ### UI
@@ -239,21 +288,30 @@ airflow dag optimize export my_dag_id --format json
 
 ## Implementation Plan
 
-### Phase 1 — Independence + opaque classification
+### Phase 1 — Independence + tiered clear classification ✓ (implemented)
 
-- Parse serialized DAG; compute topological levels and antichains of **clear** tasks.
-- Default operator → opaque map; allowlist for **clear** builtins.
-- Text/JSON report with proofs and abstentions.
+- Parse serialized DAG; compute structurally independent pairs.
+- Tiered allowlist: T1 (trivial), T2 (computation, 16 built-in operators), T3
+  (user-extended via env var / CLI flag / Python argument).
+- Tier-aware confidence: `high` (T1+T1), `medium_high` (T1+T2 or T2+T2), `medium`
+  (any T3 involved).
+- Text/JSON report with proofs, abstentions, tier labels, and per-hint confidence.
+- `clear_operator_allowlist_tiers` and `clear_tier_counts` in graph metrics.
+- Report schema `1.2`, policy `conservative_v2`.
 
-### Phase 2 — API + UI
+### Phase 2 — API + UI ✓ (implemented)
 
-- REST + React panel aligned with policy (1)–(4).
+- FastAPI sub-app mounted at `/uape`; plugin tabs on DAG / run / task / task-instance
+  screens.
+- UI shows tier badges (T1 green / T2 blue / T3 amber) and confidence labels per hint.
+- Task opacity table includes a Tier column.
 
-### Phase 3 — Author annotations
+### Phase 3 — Formal author annotations (future)
 
-- Explicit tags to mark tasks clear or opaque; team overrides in config.
+- Explicit DAG/task-level tags to mark tasks clear or opaque; richer team overrides
+  in Airflow config. The T3 env-var/flag mechanism is a lightweight precursor.
 
-### Phase 4 — Optional non-binding stats
+### Phase 4 — Optional non-binding stats (future)
 
 - Attach duration histograms to reports; strict separation from safety section.
 
@@ -303,3 +361,4 @@ airflow dag optimize export my_dag_id --format json
 |---|---|---|
 | 2026-04-11 | [Your Name] | Initial draft |
 | 2026-04-11 | [Your Name] | Refocus: graph-proven parallelism only; opaque tasks preserve order |
+| 2026-04-17 | [Your Name] | Expand to tiered allowlist (T1/T2/T3); add user-extensibility via env var and CLI flag; update examples; bump schema to 1.2 / policy to conservative_v2 |

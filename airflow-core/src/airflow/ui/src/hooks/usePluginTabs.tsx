@@ -17,33 +17,54 @@
  * under the License.
  */
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { LuPlug } from "react-icons/lu";
 
 import { usePluginServiceGetPlugins } from "openapi/queries";
 import type { ExternalViewResponse, ReactAppResponse } from "openapi/requests/types.gen";
 import { useColorMode } from "src/context/colorMode";
+import { slugifyPluginCategory } from "src/utils/pluginViewUtils";
 
 type TabPlugin = {
   icon: ReactNode;
   label: string;
+  navLinkEnd?: boolean;
   value: string;
 };
 
+type PluginTabView = ExternalViewResponse | ReactAppResponse;
+
 export const usePluginTabs = (destination: string): Array<TabPlugin> => {
+  const { t: translate } = useTranslation("dag");
   const { colorMode } = useColorMode();
   const { data: pluginData } = usePluginServiceGetPlugins();
 
-  // Get external views with the specified destination and ensure they have url_route
   const externalViews =
     pluginData?.plugins
       .flatMap((plugin) => [...plugin.external_views, ...plugin.react_apps])
       .filter(
-        (view: ExternalViewResponse | ReactAppResponse) =>
-          view.destination === destination && Boolean(view.url_route),
+        (view: PluginTabView) => view.destination === destination && Boolean(view.url_route),
       ) ?? [];
 
-  return externalViews.map((view) => {
-    // Choose icon based on theme - prefer dark mode icon if available and in dark mode
+  const emittedCategorySlugs = new Set<string>();
+  const categoryMembers = new Map<string, Array<PluginTabView>>();
+
+  for (const view of externalViews) {
+    const rawCategory = view.category?.trim();
+
+    if (rawCategory !== undefined && rawCategory !== "") {
+      const slug = slugifyPluginCategory(rawCategory);
+      const bucket = categoryMembers.get(slug);
+
+      if (bucket === undefined) {
+        categoryMembers.set(slug, [view]);
+      } else {
+        bucket.push(view);
+      }
+    }
+  }
+
+  const tabForView = (view: PluginTabView): TabPlugin => {
     let iconSrc = view.icon;
 
     if (colorMode === "dark" && view.icon_dark_mode !== undefined && view.icon_dark_mode !== null) {
@@ -60,7 +81,66 @@ export const usePluginTabs = (destination: string): Array<TabPlugin> => {
     return {
       icon,
       label: view.name,
-      value: `plugin/${view.url_route}`,
+      navLinkEnd: true,
+      value: `plugin/${view.url_route ?? ""}`,
     };
-  });
+  };
+
+  const tabForCategory = (slug: string): TabPlugin => {
+    const members = categoryMembers.get(slug) ?? [];
+    const sorted = [...members].sort((left, right) =>
+      left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+    );
+    const [primary] = sorted;
+
+    if (primary === undefined) {
+      return {
+        icon: <LuPlug />,
+        label: translate(`tabs.pluginCategory.${slug}`, { defaultValue: slug.replaceAll("-", " ") }),
+        navLinkEnd: true,
+        value: `plugin/${slug}`,
+      };
+    }
+
+    let iconSrc = primary.icon;
+
+    if (colorMode === "dark" && primary.icon_dark_mode !== undefined && primary.icon_dark_mode !== null) {
+      iconSrc = primary.icon_dark_mode;
+    }
+
+    const icon =
+      iconSrc !== undefined && iconSrc !== null ? (
+        <img alt="" src={iconSrc} style={{ height: "1rem", width: "1rem" }} />
+      ) : (
+        <LuPlug />
+      );
+
+    const labelKey = `tabs.pluginCategory.${slug}`;
+
+    return {
+      icon,
+      label: translate(labelKey, { defaultValue: slug.replaceAll("-", " ") }),
+      navLinkEnd: sorted.length <= 1,
+      value: `plugin/${slug}`,
+    };
+  };
+
+  const tabs: Array<TabPlugin> = [];
+
+  for (const view of externalViews) {
+    const rawCategory = view.category?.trim();
+
+    if (rawCategory === undefined || rawCategory === "") {
+      tabs.push(tabForView(view));
+    } else {
+      const slug = slugifyPluginCategory(rawCategory);
+
+      if (!emittedCategorySlugs.has(slug)) {
+        emittedCategorySlugs.add(slug);
+        tabs.push(tabForCategory(slug));
+      }
+    }
+  }
+
+  return tabs;
 };
