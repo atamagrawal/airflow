@@ -68,7 +68,7 @@ import { PanelButtons } from "./PanelButtons";
 type Props = {
   readonly error?: unknown;
   readonly isLoading?: boolean;
-  readonly tabs: Array<{ icon: ReactNode; label: string; value: string }>;
+  readonly tabs: Array<{ icon: ReactNode; label: string; navLinkEnd?: boolean; value: string }>;
 } & PropsWithChildren;
 
 export const DetailsLayout = ({ children, error, isLoading, tabs }: Props) => {

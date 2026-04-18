@@ -19,9 +19,9 @@ from __future__ import annotations
 
 from airflow.cli.cli_config import ActionCommand, Arg, GroupCommand, lazy_load_command
 
-ARG_DAG_ID = Arg(("dag_id",), help="The id of the dag")
+ARG_DAG_ID = Arg(("dag_id",), help="The DAG id to analyse")
 
-ARG_UAPE_FORMAT = Arg(
+ARG_FORMAT = Arg(
     ("--format",),
     help="Output format",
     choices=["text", "json"],
@@ -29,24 +29,40 @@ ARG_UAPE_FORMAT = Arg(
     type=str.lower,
 )
 
+ARG_VERDICT = Arg(
+    ("--verdict",),
+    help="Filter output to edges with this verdict only",
+    choices=["remove", "uncertain", "keep", "all"],
+    default="all",
+    type=str.lower,
+)
+
+ARG_NO_SIMULATE = Arg(
+    ("--no-simulate",),
+    help="Skip Monte Carlo time-savings simulation (faster, no historical data needed)",
+    action="store_true",
+    default=False,
+)
 
 UAPE_COMMANDS = (
     ActionCommand(
-        name="independence-report",
+        name="analyze",
         help=(
-            "List structurally independent task pairs; overlap hints only when both tasks are "
-            "on the conservative clear allowlist"
+            "Analyse declared DAG edges for false dependencies using four signals "
+            "(asset overlap, XCom analysis, timing correlation, transitive reduction). "
+            "Scores each edge and recommends whether to keep, review, or remove it."
         ),
-        func=lazy_load_command("airflow.providers.uape.cli.commands.uape_independence_report"),
-        args=(ARG_DAG_ID, ARG_UAPE_FORMAT),
+        func=lazy_load_command("airflow.providers.uape.cli.commands.uape_analyze"),
+        args=(ARG_DAG_ID, ARG_FORMAT, ARG_VERDICT, ARG_NO_SIMULATE),
     ),
     ActionCommand(
         name="export",
-        help="Export full JSON report (classifications, proofs, hints, abstentions)",
+        help="Export full JSON analysis report for a DAG (all edges, signals, simulation results)",
         func=lazy_load_command("airflow.providers.uape.cli.commands.uape_export"),
         args=(
             ARG_DAG_ID,
             Arg(("--format",), help="Only json is supported", choices=["json"], default="json"),
+            ARG_NO_SIMULATE,
         ),
     ),
 )
@@ -57,7 +73,10 @@ def get_uape_cli_commands():
     return [
         GroupCommand(
             name="uape",
-            help="Advisory DAG parallelization hints (UAPE dev provider; read-only, serialized DAG)",
+            help=(
+                "Uncertainty-Aware Parallelization Engine: analyse DAG edges for false dependencies "
+                "and estimate time savings (read-only, uses serialized DAG + historical TaskInstance data)"
+            ),
             subcommands=UAPE_COMMANDS,
         ),
     ]

@@ -44,7 +44,7 @@ export const Dag = () => {
   // Get external views with dag destination
   const externalTabs = usePluginTabs("dag");
 
-  // Place DAG-scoped plugin tabs (e.g. UAPE) next to the primary views so they appear with
+  // Place DAG-scoped iframe / React plugin tabs next to the primary views so they appear with
   // Overview / Runs / Tasks / Calendar rather than after Details.
   const tabs = [
     { icon: <LuChartColumn />, label: translate("tabs.overview"), value: "" },

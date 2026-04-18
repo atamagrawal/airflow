@@ -19,6 +19,7 @@
 import { useParams } from "react-router-dom";
 
 import type { ExternalViewResponse } from "openapi/requests/types.gen";
+import { useColorMode } from "src/context/colorMode";
 
 export const Iframe = ({
   externalView,
@@ -28,6 +29,7 @@ export const Iframe = ({
   readonly sandbox?: string;
 }) => {
   const { dagId, mapIndex, runId, taskId } = useParams();
+  const { colorMode } = useColorMode();
 
   // Build the href URL with context parameters if the view has a destination
   let src = externalView.href;
@@ -51,6 +53,13 @@ export const Iframe = ({
   if (src.startsWith("http://") || src.startsWith("https://")) {
     // URL is absolute
     src = new URL(src).toString();
+  }
+
+  // Pass the current UI theme so plugin iframes can match the Airflow color scheme.
+  if (colorMode !== undefined) {
+    const separator = src.includes("?") ? "&" : "?";
+
+    src = `${src}${separator}theme=${colorMode}`;
   }
 
   return (

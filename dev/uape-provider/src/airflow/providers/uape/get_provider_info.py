@@ -28,10 +28,12 @@ def get_provider_info() -> dict:
     """
     return {
         "package-name": "apache-airflow-providers-uape",
-        "name": "Dev UAPE advisory",
+        "name": "Dev UAPE advisory (v2)",
         "description": (
-            "Read-only uncertainty-aware parallelization hints (UAPE) from serialized DAG structure only; "
-            "CLI, JSON HTTP API, and an optional Airflow UI DAG tab (plugin iframe). Does not execute user task code."
+            "Uncertainty-Aware Parallelization Engine v2: analyses declared DAG edges for false "
+            "dependencies using four independent signals (asset overlap, XCom analysis, timing "
+            "correlation, transitive reduction). Scores each edge 0–100 and estimates expected "
+            "time savings via Monte Carlo simulation. Provides CLI, REST API, and Airflow UI tab."
         ),
         "cli": ["airflow.providers.uape.cli.definition.get_uape_cli_commands"],
     }

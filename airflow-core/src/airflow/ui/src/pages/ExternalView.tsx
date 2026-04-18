@@ -21,18 +21,29 @@ import { useTranslation } from "react-i18next";
 import { useLocation, useParams } from "react-router-dom";
 
 import { usePluginServiceGetPlugins } from "openapi/queries";
+import type { ExternalViewResponse, ReactAppResponse } from "openapi/requests/types.gen";
 import { ProgressBar } from "src/components/ui";
+import { inferPluginDestinationFromPathname, slugifyPluginCategory } from "src/utils/pluginViewUtils";
 
 import { ErrorPage } from "./Error";
+import { GroupedPluginCategoryView } from "./GroupedPluginCategoryView";
 import { Iframe } from "./Iframe";
 import { ReactPlugin } from "./ReactPlugin";
 
+type PluginTabView = ExternalViewResponse | ReactAppResponse;
+
+const routeKeyForView = (view: PluginTabView): string =>
+  view.url_route ?? view.name.toLowerCase().replaceAll(" ", "-");
+
 export const ExternalView = () => {
   const { t: translate } = useTranslation();
-  const { page } = useParams();
+  const params = useParams();
+  const { page } = params;
+  const splat = params["*"];
   const { data: pluginData, isLoading } = usePluginServiceGetPlugins();
 
   const { pathname } = useLocation();
+  const childSegment = (splat ?? "").split("/").find((segment) => segment.length > 0) ?? "";
 
   const externalView =
     page === "legacy-fab-views"
@@ -44,11 +55,41 @@ export const ExternalView = () => {
         }
       : pluginData?.plugins
           .flatMap((plugin) => plugin.external_views)
-          .find((view) => (view.url_route ?? view.name.toLowerCase().replace(" ", "-")) === page);
+          .find((view) => routeKeyForView(view) === page);
 
   const reactApp = pluginData?.plugins
     .flatMap((plugin) => plugin.react_apps)
-    .find((view) => (view.url_route ?? view.name.toLowerCase().replace(" ", "-")) === page);
+    .find((view) => routeKeyForView(view) === page);
+
+  const categoryMembers: Array<PluginTabView> | undefined = (() => {
+    if (
+      page === undefined ||
+      page === "legacy-fab-views" ||
+      pluginData === undefined ||
+      externalView !== undefined ||
+      reactApp !== undefined
+    ) {
+      return undefined;
+    }
+
+    const destination = inferPluginDestinationFromPathname(pathname);
+
+    if (destination === undefined) {
+      return undefined;
+    }
+
+    const members = pluginData.plugins
+      .flatMap((plugin) => [...plugin.external_views, ...plugin.react_apps] as Array<PluginTabView>)
+      .filter(
+        (view) =>
+          view.destination === destination &&
+          Boolean(view.url_route) &&
+          Boolean(view.category?.trim()) &&
+          slugifyPluginCategory(view.category!.trim()) === page,
+      );
+
+    return members.length > 0 ? members : undefined;
+  })();
 
   if (isLoading) {
     return (
@@ -86,6 +127,12 @@ export const ExternalView = () => {
       >
         <ReactPlugin key={pathname} reactApp={reactApp} />
       </Box>
+    );
+  }
+
+  if (categoryMembers !== undefined) {
+    return (
+      <GroupedPluginCategoryView members={categoryMembers} selectedChildRoute={childSegment} />
     );
   }
 

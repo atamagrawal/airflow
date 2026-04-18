@@ -21,22 +21,31 @@
 # and **data contracts decorators** package (TaskFlow annotations), which are not on PyPI
 # while these providers are incubating.
 #
-# Also installs the in-repo **UAPE** dev provider (``dev/uape-provider``): CLI ``airflow uape``,
-# ``/uape`` HTTP routes, and UI tabs **UAPE recommendations** on DAG / Dag Run / Task / TI pages
-# (requires **Plugins** read permission for tab metadata). Restart the API server after rebuild.
+# Also installs the in-repo **UAPE** dev provider v2 (``dev/uape-provider``): CLI ``airflow uape``,
+# ``/uape`` HTTP routes, and a **Recommendations**-category view named **Recommendations** on DAG /
+# Dag Run / Task / TI pages (requires **Plugins** read permission for tab metadata). The tab shows
+# per-edge confidence scores, signal breakdowns, Monte Carlo time-savings estimates, and suggested
+# DAG fixes. Restart the API server after rebuild.
+#
+# Tab grouping by plugin ``category`` (one parent **Recommendations** tab, per-view ``name`` in
+# sub-nav when multiple views share the category) requires the **web UI shipped with this repository**,
+# not only the PyPI ``apache/airflow`` wheel inside this image. This Dockerfile extends ``apache/airflow:*``,
+# so match your Airflow version to a UI that exposes ``category`` grouping, or build
+# ``airflow-core/src/airflow/ui`` (``pnpm run build``) and copy ``dist`` over the image's
+# ``.../site-packages/airflow/ui/dist`` (see Breeze ``scripts/ci/docker-compose/mount-ui-dist.yml``).
 #
 # Build from the **repository root** (the directory that contains ``providers/``):
 #
-#   docker build -f example/Dockerfile -t atamagrawal/airflow:3.2.0-v1 .
+#   docker build -f example/Dockerfile -t atamagrawal/airflow:3.2.0-v2 .
 #
 # Push to Docker Hub (repository ``atamagrawal/airflow``; pick your own tag):
 #
-#   docker push atamagrawal/airflow:3.2.0-v1
+#   docker push atamagrawal/airflow:3.2.0-v2
 #
 # Point your docker-compose quick-start at this image (after ``docker build`` or ``docker pull``), for
 # example in ``.env``:
 #
-#   AIRFLOW_IMAGE_NAME=atamagrawal/airflow:3.2.0-v1
+#   AIRFLOW_IMAGE_NAME=atamagrawal/airflow:3.2.0-v2
 #
 # Or uncomment ``build: .`` next to your compose file and set ``context`` to the repo root with this
 # file as ``dockerfile`` (see https://airflow.apache.org/docs/docker-stack/build.html ).
