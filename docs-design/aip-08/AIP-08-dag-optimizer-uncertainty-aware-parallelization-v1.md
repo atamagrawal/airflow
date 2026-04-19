@@ -15,11 +15,21 @@
    specific language governing permissions and limitations
    under the License.
 
-# UAPE dev provider — implementation
+# UAPE dev provider — v1 implementation (superseded)
 
+> **Status: superseded.**  This document describes the v1 implementation (conservative structural
+> independence analysis). It has been replaced by the v2 implementation described in
+> `AIP-08-dag-optimizer-uncertainty-aware-parallelization-v2.md`.
+>
+> The v1 approach found task pairs that were *already* parallel by structure (no declared edge).
+> Because Airflow already runs those pairs concurrently, v1 confirmed existing correct behaviour
+> rather than detecting missed parallelism. The v2 implementation corrects this by analysing
+> *declared edges* for false dependencies — the actual source of over-serialization.
 
-This note documents the **Uncertainty-Aware Parallelization Engine (UAPE)** advisory
-implementation shipped as an optional **development** provider. It is **not** part of
+---
+
+This note documents the original **Uncertainty-Aware Parallelization Engine (UAPE)** advisory
+implementation (v1) shipped as an optional **development** provider. It is **not** part of
 ``apache-airflow`` core; it does not change scheduling.
 
 Code location: ``dev/uape-provider/`` (distribution name ``apache-airflow-providers-uape``,

@@ -32,6 +32,7 @@ export type HITLQueryParams = {
 export type TabItem = {
   icon: React.ReactNode;
   label: string;
+  navLinkEnd?: boolean;
   value: string;
 };
 

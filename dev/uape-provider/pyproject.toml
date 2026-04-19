@@ -21,13 +21,21 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "apache-airflow-providers-uape"
-version = "0.0.1"
-description = "Dev-only UAPE: parallelization advisory CLI and JSON HTTP API for external apps (read-only)."
+version = "0.2.0"
+description = "Dev-only UAPE v2: uncertainty-aware edge dependency analysis with Monte Carlo time-savings simulation, CLI, HTTP API, and UI iframe."
 readme = "README.txt"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 dependencies = [
     "apache-airflow>=3.0.0",
+    "networkx>=3.0",
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
 ]
 
 [project.urls]

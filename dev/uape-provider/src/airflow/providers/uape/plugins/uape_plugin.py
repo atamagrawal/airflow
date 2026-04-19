@@ -19,6 +19,10 @@
 Airflow plugin: mounts the UAPE read-only API and UI tabs (iframe) on DAG-related screens.
 
 ``url_route`` values must be unique across all plugins (Airflow deduplicates globally).
+
+When the UI groups plugin views by ``category``, the parent tab is the generic **Recommendations**
+panel. Each view's ``name`` should describe *this* recommendation stream (for sub-navigation when
+several providers share the category), not rename the panel.
 """
 
 from __future__ import annotations
@@ -45,25 +49,29 @@ class UapeAdvisoryPlugin(AirflowPlugin):
     fastapi_apps = [_uape_fastapi_metadata()]
     external_views = [
         {
-            "name": "UAPE recommendations",
+            "name": "Recommendations",
+            "category": "recommendations",
             "destination": "dag",
             "url_route": "uape-recommendations",
             "href": _UAPE_IFRAME_HREF,
         },
         {
-            "name": "UAPE recommendations",
+            "name": "Recommendations",
+            "category": "recommendations",
             "destination": "dag_run",
             "url_route": "uape-recommendations-run",
             "href": _UAPE_IFRAME_HREF,
         },
         {
-            "name": "UAPE recommendations",
+            "name": "Recommendations",
+            "category": "recommendations",
             "destination": "task",
             "url_route": "uape-recommendations-task",
             "href": _UAPE_IFRAME_HREF,
         },
         {
-            "name": "UAPE recommendations",
+            "name": "Recommendations",
+            "category": "recommendations",
             "destination": "task_instance",
             "url_route": "uape-recommendations-ti",
             "href": _UAPE_IFRAME_HREF,
