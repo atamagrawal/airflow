@@ -1,0 +1,4 @@
+{
+  "extraPaths": ["dev/uape-provider/src"],
+  "reportMissingModuleSource": "none"
+}

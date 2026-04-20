@@ -30,6 +30,13 @@
 | Initial | v2 engine: 4 signals, scoring, Monte Carlo, FastAPI UI |
 | Follow-up | Fix UI list blank on first render (DOM ordering + captured element refs) |
 | Follow-up | Replace in-process dict cache with DB-backed `uape_report_cache` table |
+| Reliability pass | Signal 1: no-declaration case changed from `passed=False` to `skipped=True` (neutral evidence) |
+| Reliability pass | Signal 2: XCom visitor now also matches tuple literals and positional first argument |
+| Reliability pass | Signal 3: negative mean gap no longer passes as "tightly coupled"; gap report added |
+| Reliability pass | Scoring: `MIN_ACTIVE_SIGNALS_FOR_REMOVE = 2` guardrail — `remove` requires ≥ 2 active signals |
+| Reliability pass | Makespan: fixed element-wise `np.maximum` aggregation across all terminal tasks per simulation |
+| Reliability pass | Topological sort: replaced recursive DFS with iterative to avoid Python recursion limit |
+| Reliability pass | `MIN_ACTIVE_SIGNALS_FOR_REMOVE` exported in `__all__` |
 
 ---
 
@@ -70,9 +77,13 @@ Matching is **prefix-based**: `s3://bucket/prefix/` matches `s3://bucket/prefix/
 This covers the common pattern where a producer writes to a prefix and a consumer reads any file
 under it.
 
-**Skipped** when either task is absent from `task_dict`. **Not skipped** (but `passed=False`) when
-both tasks exist but declare no assets — absence of asset declarations is evidence of no data
-dependency.
+**Skipped** when either task is absent from `task_dict`, or when **neither** task declares any
+inlets or outlets — absence of declarations is treated as missing evidence, not negative evidence,
+since many teams do not use the asset annotation pattern at all.
+
+**Not skipped** (but `passed=False`) only when at least one side has declarations but no URI
+overlap is found — in that case the author has explicitly annotated data flow but the paths do not
+match, which is genuine negative evidence.
 
 #### Signal 2 — XCom code analysis (weight 25 %)
 
@@ -94,8 +105,17 @@ source file is not accessible at analysis time).
 Skipping is intentional: a missing source does not mean the dependency is real. The signal is
 excluded from the score denominator so it does not penalise real dependencies.
 
-**Limitation vs design doc:** Dynamic XCom pulls (`xcom_pull(task_ids=some_variable)`) are not
-detected. The signal only matches string and list literals in the AST.
+The visitor matches all of the following forms:
+
+```python
+ti.xcom_pull("upstream_id")                          # positional first arg
+ti.xcom_pull(task_ids="upstream_id")                 # keyword string literal
+ti.xcom_pull(task_ids=["upstream_id", "other"])      # keyword list literal
+ti.xcom_pull(task_ids=("upstream_id", "other"))      # keyword tuple literal
+```
+
+**Limitation vs design doc:** Dynamic XCom pulls (`xcom_pull(task_ids=some_variable)`) and
+indirect references (variable aliasing, helper wrappers) are not detected.
 
 #### Signal 3 — Timing correlation (weight 20 %)
 
@@ -106,7 +126,11 @@ def signal_timing_correlation(dag_id, upstream_id, downstream_id, session) -> Si
 Queries `TaskInstance` (success state only) and computes the distribution of the gap between
 `upstream.end_date` and `downstream.start_date` across historical runs.
 
-**Threshold:** mean gap < 10 s **and** std < 5 s → `passed=True` (tight coupling, likely dependent).
+**Threshold:** `0.0 ≤ mean gap < 10 s` **and** `std < 5 s` → `passed=True` (tight coupling, likely
+dependent). The lower bound `0.0 ≤` is important: a **negative** mean gap means downstream
+consistently starts *before* upstream finishes, which indicates the tasks already run in parallel
+and the edge is not enforced. Such a case correctly returns `passed=False`. The count of negative
+gaps is included in the `explanation` field for transparency.
 
 Requires `session` (SQLAlchemy session passed from CLI/web endpoint). **Skipped** when `session=None`
 or when fewer than `MIN_TIMING_RUNS = 10` successful paired runs exist.
@@ -159,6 +183,12 @@ Thresholds (unchanged from design):
 
 When all signals are skipped (no data available at all), the score defaults to 50 → `uncertain`.
 
+**Minimum-evidence guardrail:** even if the numeric score falls below `THRESHOLD_REMOVE`, the
+verdict is upgraded to `uncertain` when fewer than `MIN_ACTIVE_SIGNALS_FOR_REMOVE = 2` signals
+were active (non-skipped). This prevents a single failing signal from triggering a `remove`
+recommendation when the rest of the evidence is simply unavailable — for example, a brand-new
+DAG with no history and no asset declarations, where only the transitive reduction signal fires.
+
 ### 2.3 Task Duration Profiler (§5.4)
 
 ```python
@@ -187,6 +217,16 @@ fully vectorised across simulations:
 
 ```python
 finish[tid] = np.maximum.reduce([finish[p] for p in predecessors]) + samples[tid]
+```
+
+After the forward pass, the DAG makespan for each simulation is the **element-wise maximum** over
+all terminal task finish arrays — not just the finish array of the single task with the highest
+mean. This matters for multi-terminal DAGs where different simulations have different bottlenecks:
+
+```python
+makespan = np.zeros(n)
+for task_finish in finish.values():
+    np.maximum(makespan, task_finish, out=makespan)
 ```
 
 This is orders of magnitude faster than a Python loop over 10 000 runs.
@@ -319,7 +359,7 @@ dev/uape-provider/
 │   └── get_provider_info.py                # Provider metadata entry point
 └── tests/
     ├── conftest.py                         # Dev-env bootstrap (stubs broken entry-points)
-    └── test_parallelization.py             # 44 unit tests (pytest)
+    └── test_parallelization.py             # 54 unit tests (pytest)
 ```
 
 ---
@@ -562,15 +602,21 @@ have **can read** on **Plugins**. Admin has this by default.
 ## 10. Running the Tests
 
 ```bash
-uv run pytest dev/uape-provider/tests/test_parallelization.py -xvs
+uv run --project dev/uape-provider --with pytest --with pytest-asyncio \
+    pytest dev/uape-provider/tests/test_parallelization.py -v
 ```
 
-44 tests covering:
+54 tests covering:
 - Each signal in isolation (pass / fail / skip paths)
-- Scoring engine (threshold behaviour, skipped-signal normalisation)
-- Duration profiler (sample thresholds, distribution selection)
-- Monte Carlo simulator (savings direction, field completeness)
-- Full `analyze_dag_edges` pipeline (schema, metrics, redundant edge detection, summary counts)
+- Signal 1: no-declaration → skipped; partial-declaration → active negative
+- Signal 2: keyword string, list, tuple literals; positional first argument
+- Signal 3: tight coupling, loose coupling, insufficient data, negative-mean-gap rejection
+- Signal 4: minimal edge, redundant edge, bypass-path explanation
+- Scoring engine: threshold behaviour, skipped-signal normalisation, minimum-evidence guardrail
+- Duration profiler: sample thresholds, distribution selection
+- Topological sort: linear chain, diamond DAG, independent tasks, chain deeper than recursion limit
+- Monte Carlo makespan: element-wise terminal max correctness, savings direction, field completeness
+- Full `analyze_dag_edges` pipeline: schema, metrics, redundant edge detection, summary counts
 
 The `tests/conftest.py` stubs Airflow's provider-discovery entry-point loading so that broken
 or uninstalled provider packages in the dev environment do not abort test collection.
@@ -583,8 +629,13 @@ or uninstalled provider packages in the dev environment do not abort test collec
 |---|---|---|
 | No DAG Rewriter | Users apply changes manually | `dag_diff` field gives exact change; AST rewriter deferred |
 | XCom analysis requires PythonOperator | 0 weight for Bash/SQL/etc operators | Other 3 signals still vote; score normalised over available signals |
-| Timing signal needs ≥ 10 historical runs | New DAGs or rarely-run DAGs get timing skipped | Skipped signals excluded from denominator; doesn't penalise new DAGs |
-| Dynamic XCom pulls not detected | `xcom_pull(task_ids=variable)` missed | Signal `skipped=False, passed=False`; explicitly documented |
+| Timing signal needs ≥ 10 historical runs | New DAGs or rarely-run DAGs get timing skipped | Skipped signals excluded from denominator; `MIN_ACTIVE_SIGNALS_FOR_REMOVE` guardrail prevents false `remove` on new DAGs |
+| Dynamic XCom pulls not detected | `xcom_pull(task_ids=variable)` or aliased refs missed | Signal `skipped=False, passed=False`; explicitly documented |
+| Positional / tuple XCom forms ~~not detected~~ | ~~`xcom_pull('id')` or `task_ids=(...)` missed~~ | **Resolved** — visitor now handles positional first arg and tuple literals |
+| Asset no-declaration wrongly penalised | ~~Teams not using asset annotations got false negatives~~ | **Resolved** — neither-side-declares now returns `skipped=True` (neutral) |
+| Negative timing gaps falsely "tightly coupled" | ~~Mean gap < 0 passed the < 10 s check~~ | **Resolved** — condition now requires `0.0 ≤ mean_gap < 10.0` |
+| Makespan used single max-mean terminal | ~~Multi-terminal DAGs gave biased savings estimates~~ | **Resolved** — element-wise `np.maximum` over all terminal finish arrays |
+| Topological sort hit recursion limit | ~~DAGs deeper than ~1000 tasks would crash~~ | **Resolved** — iterative DFS replaces recursive implementation |
 | Synchronous on-demand analysis | Large DAGs (100+ tasks, 200+ edges) slow on first request | `--no-simulate` skips Monte Carlo; subsequent requests served from DB cache |
 | Cache stores full JSON report per DAG | Report JSON can be large for very wide DAGs | Acceptable for dev use; consider compression for production promotion |
 | Asset URI prefix matching only | Glob/regex path patterns not handled | Covers the dominant S3/GCS/ADLS prefix pattern; extend as needed |
