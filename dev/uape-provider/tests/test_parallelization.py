@@ -22,10 +22,12 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import airflow.providers.uape.parallelization as parallelization
 from airflow.providers.uape.parallelization import (
     THRESHOLD_REMOVE,
     THRESHOLD_UNCERTAIN,
@@ -109,11 +111,11 @@ class TestSignalAssetOverlap:
         assert result.passed is False
         assert result.skipped is False
 
-    def test_no_declarations_fails_not_skipped(self):
+    def test_no_declarations_skips(self):
         task_dict = {"a": _task(), "b": _task()}
         result = signal_asset_overlap(task_dict, "a", "b")
         assert result.passed is False
-        assert result.skipped is False  # Signal ran; just found nothing
+        assert result.skipped is True
 
     def test_missing_task_skips(self):
         result = signal_asset_overlap({}, "a", "b")
@@ -136,6 +138,8 @@ class TestSignalAssetOverlap:
 _XCOM_PULL_SOURCE_UPSTREAM = "def f(ti):\n    return ti.xcom_pull(task_ids='upstream')\n"
 _XCOM_PULL_SOURCE_OTHER = "def f(ti):\n    return ti.xcom_pull(task_ids='other_task')\n"
 _XCOM_PULL_SOURCE_LIST = "def f(ti):\n    return ti.xcom_pull(task_ids=['upstream', 'other'])\n"
+_XCOM_PULL_SOURCE_TUPLE = "def f(ti):\n    return ti.xcom_pull(task_ids=('upstream', 'other'))\n"
+_XCOM_PULL_SOURCE_POSITIONAL = "def f(ti):\n    return ti.xcom_pull('upstream')\n"
 _XCOM_PULL_SOURCE_NONE = "def f(x):\n    return x + 1\n"
 
 
@@ -169,6 +173,24 @@ class TestSignalXcomAnalysis:
             "downstream": _task(python_callable=_fake_callable),
         }
         with patch("inspect.getsource", return_value=_XCOM_PULL_SOURCE_LIST):
+            result = signal_xcom_analysis(task_dict, "upstream", "downstream")
+        assert result.passed is True
+
+    def test_xcom_pull_tuple_of_ids_passes(self):
+        task_dict = {
+            "upstream": _task(),
+            "downstream": _task(python_callable=_fake_callable),
+        }
+        with patch("inspect.getsource", return_value=_XCOM_PULL_SOURCE_TUPLE):
+            result = signal_xcom_analysis(task_dict, "upstream", "downstream")
+        assert result.passed is True
+
+    def test_xcom_pull_positional_first_arg_passes(self):
+        task_dict = {
+            "upstream": _task(),
+            "downstream": _task(python_callable=_fake_callable),
+        }
+        with patch("inspect.getsource", return_value=_XCOM_PULL_SOURCE_POSITIONAL):
             result = signal_xcom_analysis(task_dict, "upstream", "downstream")
         assert result.passed is True
 
@@ -268,6 +290,35 @@ class TestSignalTimingCorrelation:
         result = signal_timing_correlation("dag", "a", "b", mock_session)
         assert result.passed is False
         assert "loose" in result.explanation
+
+    def test_negative_mean_gap_fails_not_tightly_coupled(self):
+        """Downstream consistently starting BEFORE upstream ends → tasks run in parallel."""
+        from datetime import datetime, timedelta
+
+        tis = []
+        base = datetime(2024, 1, 1, 0, 0, 0)
+        for i in range(15):
+            start = base + timedelta(hours=i)
+            ti_up = SimpleNamespace(
+                run_id=f"run_{i}",
+                task_id="a",
+                end_date=start + timedelta(minutes=5),
+                start_date=start,
+            )
+            ti_down = SimpleNamespace(
+                run_id=f"run_{i}",
+                task_id="b",
+                start_date=start + timedelta(minutes=3),  # starts 2 min BEFORE upstream ends
+                end_date=start + timedelta(minutes=10),
+            )
+            tis.extend([ti_up, ti_down])
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value.scalars.return_value = tis
+
+        result = signal_timing_correlation("dag", "a", "b", mock_session)
+        assert result.passed is False
+        assert "parallel" in result.explanation
 
     def test_insufficient_data_fails_not_skipped(self):
         from datetime import datetime, timedelta
@@ -391,6 +442,20 @@ class TestScoreEdge:
         assert es.confidence_score == 50
         assert es.verdict == "uncertain"
 
+    def test_remove_downgraded_to_uncertain_when_only_one_active_signal(self):
+        signals = [
+            _signal(name="asset_overlap", passed=False, weight=35),
+            _signal(name="xcom", passed=False, weight=25, skipped=True),
+            _signal(name="timing", passed=False, weight=20, skipped=True),
+            _signal(name="transitive", passed=False, weight=20, skipped=True),
+        ]
+        es = score_edge("a", "b", signals)
+        assert es.confidence_score == 0
+        assert es.verdict == "uncertain"
+
+    def test_min_active_signals_constant_is_exported(self):
+        assert parallelization.MIN_ACTIVE_SIGNALS_FOR_REMOVE >= 2  # type: ignore[attr-defined]
+
     def test_verdict_thresholds(self):
         # Score just below THRESHOLD_REMOVE
         below_remove = [
@@ -427,7 +492,7 @@ class TestFitDurationProfile:
         assert profile.n_samples == len(durations)
 
     def test_profile_dist_name_is_string(self):
-        durations = list(range(10, 25))
+        durations = [float(v) for v in range(10, 25)]
         profile = fit_duration_profile("t", durations)
         assert profile is not None
         assert isinstance(profile.dist_name, str)
@@ -438,7 +503,57 @@ class TestFitDurationProfile:
 # ---------------------------------------------------------------------------
 
 
+class TestTopologicalOrder:
+    @staticmethod
+    def _topo(task_ids: list, adj: dict) -> list:
+        fn = cast("Any", getattr(parallelization, "_topological_order"))
+        return fn(task_ids, adj)
+
+    def test_linear_chain(self):
+        adj = {"a": {"b"}, "b": {"c"}, "c": set()}
+        order = self._topo(["a", "b", "c"], adj)
+        assert order.index("a") < order.index("b") < order.index("c")
+
+    def test_diamond_dag(self):
+        adj = {"a": {"b", "c"}, "b": {"d"}, "c": {"d"}, "d": set()}
+        order = self._topo(["a", "b", "c", "d"], adj)
+        assert order.index("a") < order.index("b")
+        assert order.index("a") < order.index("c")
+        assert order.index("b") < order.index("d")
+        assert order.index("c") < order.index("d")
+
+    def test_independent_tasks_all_present(self):
+        adj = {"a": set(), "b": set(), "c": set()}
+        order = self._topo(["a", "b", "c"], adj)
+        assert set(order) == {"a", "b", "c"}
+
+    def test_deep_chain_does_not_overflow(self):
+        """Iterative DFS should handle chains deeper than Python's recursion limit."""
+        import sys
+
+        depth = sys.getrecursionlimit() + 500
+        ids = [str(i) for i in range(depth)]
+        adj = {ids[i]: {ids[i + 1]} for i in range(depth - 1)}
+        adj[ids[-1]] = set()
+        order = self._topo(ids, adj)
+        assert order[0] == ids[0]
+        assert order[-1] == ids[-1]
+
+
 class TestSimulateSavings:
+    def test_vectorized_makespan_uses_elementwise_terminal_max(self):
+        topo = ["a", "b", "c"]
+        preds = {"b": ["a"], "c": ["a"]}
+        samples = {
+            "a": np.array([1.0, 1.0]),
+            "b": np.array([9.0, 1.0]),
+            "c": np.array([1.0, 9.0]),
+        }
+
+        makespan_fn = cast("Any", getattr(parallelization, "_vectorized_makespan"))
+        makespan = makespan_fn(topo, preds, samples, n=2)
+        assert np.allclose(makespan, np.array([10.0, 10.0]))
+
     def _simple_profiles(self) -> dict:
         from airflow.providers.uape.parallelization import DurationProfile
 
@@ -543,8 +658,8 @@ class TestAnalyzeDagEdges:
         assert edge["verdict"] in ("remove", "uncertain", "keep")
         assert 0 <= edge["confidence_score"] <= 100
 
-    def test_edge_with_asset_overlap_scores_higher(self):
-        """An edge where outlets/inlets match should score higher than one with no declarations."""
+    def test_edge_with_asset_overlap_provides_positive_evidence(self):
+        """When declarations exist, asset signal should pass rather than skip."""
         shared_asset = _asset("s3://bucket/data/")
         dag_with_assets = _dag(
             {
@@ -561,9 +676,16 @@ class TestAnalyzeDagEdges:
         report_with = analyze_dag_edges(dag_with_assets, session=None)
         report_without = analyze_dag_edges(dag_without_assets, session=None)
 
-        score_with = report_with["edge_analyses"][0]["confidence_score"]
-        score_without = report_without["edge_analyses"][0]["confidence_score"]
-        assert score_with > score_without
+        signal_with = next(
+            s for s in report_with["edge_analyses"][0]["signals"] if s["name"] == "asset_overlap"
+        )
+        signal_without = next(
+            s for s in report_without["edge_analyses"][0]["signals"] if s["name"] == "asset_overlap"
+        )
+        assert signal_with["passed"] is True
+        assert signal_with["skipped"] is False
+        assert signal_without["passed"] is False
+        assert signal_without["skipped"] is True
 
     def test_all_signals_appear_in_output(self):
         dag = _dag({"a": _task(downstream=["b"]), "b": _task()})

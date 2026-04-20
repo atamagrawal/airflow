@@ -68,6 +68,7 @@ THRESHOLD_UNCERTAIN: int = 65  # 40 ≤ score < 65 → uncertain  /  ≥ 65 → 
 N_SIMULATIONS: int = 10_000
 MIN_TIMING_RUNS: int = 10
 MIN_PROFILE_RUNS: int = 5
+MIN_ACTIVE_SIGNALS_FOR_REMOVE: int = 2
 
 _REPORT_SCHEMA_VERSION: str = "2.0"
 _POLICY_ID: str = "uncertainty_aware_v1"
@@ -139,20 +140,33 @@ def _build_adjacency(task_dict: dict[str, Any]) -> dict[str, set[str]]:
 
 
 def _topological_order(task_ids: list[str], adj: dict[str, set[str]]) -> list[str]:
-    """Return task_ids in topological (dependency) order using iterative DFS."""
+    """Return task_ids in topological (dependency) order using iterative post-order DFS.
+
+    Iterative to avoid hitting Python's recursion limit on large DAGs.
+    """
     visited: set[str] = set()
     order: list[str] = []
 
-    def _visit(node: str) -> None:
-        if node in visited:
-            return
-        visited.add(node)
-        for nxt in adj.get(node, ()):
-            _visit(nxt)
-        order.append(node)
+    for start in task_ids:
+        if start in visited:
+            continue
+        # Stack holds (node, post_process) tuples.
+        # When post_process is True the node's successors are already on the
+        # stack; appending node to order now gives post-order traversal.
+        stack: list[tuple[str, bool]] = [(start, False)]
+        while stack:
+            node, post_process = stack.pop()
+            if post_process:
+                order.append(node)
+                continue
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.append((node, True))
+            for nxt in adj.get(node, ()):
+                if nxt not in visited:
+                    stack.append((nxt, False))
 
-    for tid in task_ids:
-        _visit(tid)
     order.reverse()
     return order
 
@@ -225,7 +239,8 @@ def signal_asset_overlap(task_dict: dict[str, Any], upstream_id: str, downstream
             name="asset_overlap",
             passed=False,
             weight=SIGNAL_WEIGHT_ASSET_OVERLAP,
-            explanation="Neither task declares asset inlets/outlets — no overlap possible",
+            skipped=True,
+            explanation="Neither task declares asset inlets/outlets — skipping asset overlap signal",
         )
 
     overlap = _paths_overlap(up_outlets, down_inlets)
@@ -258,18 +273,25 @@ class _XComPullVisitor(ast.NodeVisitor):
         self.upstream_id = upstream_id
         self.found = False
 
+    def _check_value(self, val: ast.expr) -> None:
+        """Mark found if val is a constant or collection literal that contains upstream_id."""
+        if isinstance(val, ast.Constant) and val.value == self.upstream_id:
+            self.found = True
+        elif isinstance(val, (ast.List, ast.Tuple)):
+            for elt in val.elts:
+                if isinstance(elt, ast.Constant) and elt.value == self.upstream_id:
+                    self.found = True
+
     def visit_Call(self, node: ast.Call) -> None:
         is_xcom_pull = isinstance(node.func, ast.Attribute) and node.func.attr == "xcom_pull"
         if is_xcom_pull:
+            # xcom_pull(task_ids, ...) — first positional arg is task_ids
+            if node.args:
+                self._check_value(node.args[0])
+            # xcom_pull(task_ids=...) — keyword form
             for kw in node.keywords:
                 if kw.arg == "task_ids":
-                    val = kw.value
-                    if isinstance(val, ast.Constant) and val.value == self.upstream_id:
-                        self.found = True
-                    elif isinstance(val, ast.List):
-                        for elt in val.elts:
-                            if isinstance(elt, ast.Constant) and elt.value == self.upstream_id:
-                                self.found = True
+                    self._check_value(kw.value)
         self.generic_visit(node)
 
 
@@ -404,16 +426,23 @@ def signal_timing_correlation(
     arr = np.array(gaps)
     mean_gap = float(arr.mean())
     std_gap = float(arr.std())
-    # Low mean gap (<10 s) AND low variance indicates the downstream task
-    # consistently starts immediately after the upstream — strong coupling signal.
-    tightly_coupled = mean_gap < 10.0 and std_gap < 5.0
+    n_negative = int((arr < 0).sum())
 
+    # A non-negative mean gap < 10 s with low variance means the downstream task
+    # consistently starts right after the upstream — strong sequential coupling.
+    # Negative mean gaps mean downstream started before upstream finished, which
+    # indicates the tasks already run in parallel and there is no enforced dependency.
+    tightly_coupled = 0.0 <= mean_gap < 10.0 and std_gap < 5.0
+
+    neg_note = (
+        f", {n_negative}/{len(gaps)} run(s) had negative gap (tasks ran in parallel)" if n_negative else ""
+    )
     return SignalResult(
         name="timing_correlation",
         passed=tightly_coupled,
         weight=SIGNAL_WEIGHT_TIMING_CORR,
         explanation=(
-            f"Mean gap: {mean_gap:.1f}s, std: {std_gap:.1f}s — "
+            f"Mean gap: {mean_gap:.1f}s, std: {std_gap:.1f}s{neg_note} — "
             f"{'tightly coupled (likely dependent)' if tightly_coupled else 'loose coupling (likely independent)'}"
         ),
     )
@@ -478,6 +507,7 @@ def score_edge(from_task: str, to_task: str, signals: list[SignalResult]) -> Edg
     """Combine signal results into a normalised 0–100 confidence score."""
     total_weight = sum(s.effective_weight for s in signals)
     earned = sum(s.score_contribution for s in signals)
+    active_signal_count = sum(1 for s in signals if not s.skipped)
 
     if total_weight > 0:
         score = int(round(earned * 100 / total_weight))
@@ -490,6 +520,10 @@ def score_edge(from_task: str, to_task: str, signals: list[SignalResult]) -> Edg
         verdict = "uncertain"
     else:
         verdict = "keep"
+
+    # Guardrail: avoid "remove" when too little evidence is available.
+    if verdict == "remove" and active_signal_count < MIN_ACTIVE_SIGNALS_FOR_REMOVE:
+        verdict = "uncertain"
 
     return EdgeScore(
         from_task=from_task,
@@ -624,7 +658,10 @@ def _vectorized_makespan(
 
     if not finish:
         return zeros
-    return max(finish.values(), key=lambda x: x.mean())
+    makespan = zeros.copy()
+    for task_finish in finish.values():
+        np.maximum(makespan, task_finish, out=makespan)
+    return makespan
 
 
 def simulate_savings(
@@ -923,6 +960,7 @@ __all__ = [
     "THRESHOLD_REMOVE",
     "THRESHOLD_UNCERTAIN",
     "N_SIMULATIONS",
+    "MIN_ACTIVE_SIGNALS_FOR_REMOVE",
     "SignalResult",
     "EdgeScore",
     "DurationProfile",
