@@ -29,6 +29,7 @@ import { Configs } from "src/pages/Configs";
 import { Connections } from "src/pages/Connections";
 import { Dag } from "src/pages/Dag";
 import { Backfills } from "src/pages/Dag/Backfills";
+import { ShadowReports } from "src/pages/Dag/ShadowReports";
 import { Calendar } from "src/pages/Dag/Calendar/Calendar";
 import { Code } from "src/pages/Dag/Code";
 import { Details as DagDetails } from "src/pages/Dag/Details";
@@ -173,6 +174,7 @@ export const routerConfig = [
           { element: <Events />, path: "events" },
           { element: <Code />, path: "code" },
           { element: <DagDetails />, path: "details" },
+          { element: <ShadowReports />, path: "shadow_reports" },
           pluginRoute,
         ],
         element: <Dag />,

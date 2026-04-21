@@ -88,6 +88,7 @@ __all__ = [
     "literal",
     "macros",
     "setup",
+    "shadow_dag",
     "task",
     "task_group",
     "teardown",
@@ -119,6 +120,7 @@ if TYPE_CHECKING:
     from airflow.sdk.definitions.connection import Connection
     from airflow.sdk.definitions.context import Context, get_current_context, get_parsing_context
     from airflow.sdk.definitions.dag import DAG, dag
+    from airflow.sdk.definitions.shadow import shadow_dag
     from airflow.sdk.definitions.deadline import DeadlineAlert, DeadlineReference
     from airflow.sdk.definitions.decorators import setup, task, teardown
     from airflow.sdk.definitions.decorators.task_group import task_group
@@ -232,6 +234,7 @@ __lazy_imports: dict[str, str] = {
     "literal": ".definitions.template",
     "macros": ".execution_time",
     "setup": ".definitions.decorators",
+    "shadow_dag": ".definitions.shadow",
     "task": ".definitions.decorators",
     "task_group": ".definitions.decorators",
     "teardown": ".definitions.decorators",

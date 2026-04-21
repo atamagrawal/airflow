@@ -508,6 +508,59 @@ def update_dag_parsing_results_in_db(
 
     session.flush()
 
+    # Auto-register shadow DAGs for any newly parsed DAG that carries a shadow tag.
+    try:
+        _auto_register_shadow_dags(dags, session)
+    except Exception:
+        log.exception("Error auto-registering Shadow DAGs — shadow registration skipped.")
+
+
+def _auto_register_shadow_dags(
+    dags: Collection[LazyDeserializedDAG],
+    session: Session,
+) -> None:
+    """
+    Inspect each parsed DAG for a ``__shadow__:<json>`` tag and register any
+    new Shadow DAG experiments.
+
+    This is the bridge between the ``@shadow_dag`` decorator (task-sdk) and the
+    ``ShadowDagService`` (airflow-core).  It runs in-process with the DAG
+    Manager (not in the parsing subprocess) so it has full DB access.
+    """
+    from airflow.sdk.definitions.shadow import decode_shadow_tag
+    from airflow.shadow.lifecycle import ShadowDagService
+
+    service = ShadowDagService()
+
+    for dag in dags:
+        for tag in dag.tags:
+            config = decode_shadow_tag(tag)
+            if config is None:
+                continue
+            production_dag_id = config.get("shadows", "")
+            if not production_dag_id:
+                continue
+            try:
+                service.create(
+                    production_dag_id=production_dag_id,
+                    candidate_dag_id=dag.dag_id,
+                    ttl=config.get("ttl", "7d"),
+                    divergence_alert=float(config.get("divergence_alert", 0.05)),
+                    notify=config.get("notify"),
+                    session=session,
+                )
+                log.info(
+                    "Auto-registered Shadow DAG for production='%s', candidate='%s'.",
+                    production_dag_id,
+                    dag.dag_id,
+                )
+            except Exception:
+                log.exception(
+                    "Failed to auto-register Shadow DAG for production='%s', candidate='%s'.",
+                    production_dag_id,
+                    dag.dag_id,
+                )
+
 
 class DagModelOperation(NamedTuple):
     """Collect DAG objects and perform database operations for them."""

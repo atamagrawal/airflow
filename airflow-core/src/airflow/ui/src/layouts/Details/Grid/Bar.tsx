@@ -24,6 +24,7 @@ import { VersionIndicatorOptions } from "src/constants/showVersionIndicatorOptio
 import { useHover } from "src/context/hover";
 
 import { GridButton } from "./GridButton";
+import { ShadowLane } from "./ShadowLane";
 import { BundleVersionIndicator, DagVersionIndicator } from "./VersionIndicator";
 import { BAR_HEIGHT } from "./constants";
 import {
@@ -97,6 +98,8 @@ export const Bar = ({ max, onClick, run, showVersionIndicatorMode }: Props) => {
           {run.run_type !== "scheduled" && <RunTypeIcon color="white" runType={run.run_type} size="10px" />}
         </GridButton>
       </Flex>
+      {/* Shadow Lane — AIP-09: amber-bordered indicator below each production run column */}
+      <ShadowLane productionRunId={run.run_id} />
     </Box>
   );
 };

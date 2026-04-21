@@ -343,6 +343,49 @@ ARG_POOL = Arg(("--pool",), "Resource pool to use")
 # teams
 ARG_TEAM_NAME = Arg(("name",), help="Team name")
 
+# shadow
+ARG_SHADOW_PRODUCTION_DAG = Arg(
+    ("--production-dag",),
+    help="DAG ID of the production DAG to shadow.",
+    required=True,
+)
+ARG_SHADOW_CANDIDATE_DAG_ID = Arg(
+    ("--candidate-dag-id",),
+    help="DAG ID of the candidate/experimental DAG.",
+)
+ARG_SHADOW_CANDIDATE_FILE = Arg(
+    ("--candidate-file",),
+    help="Path to the candidate DAG Python file.",
+)
+ARG_SHADOW_TTL = Arg(
+    ("--ttl",),
+    help="Shadow TTL, e.g. '7d'. Maximum 14 days.",
+    default="7d",
+)
+ARG_SHADOW_DIVERGENCE_ALERT = Arg(
+    ("--divergence-alert",),
+    help="Row-count divergence percentage threshold for alerts (default 5%%).",
+    type=float,
+    default=0.05,
+)
+ARG_SHADOW_NOTIFY = Arg(
+    ("--notify",),
+    help="Email address to notify on divergence.",
+)
+ARG_SHADOW_ID = Arg(
+    ("--shadow-id",),
+    help="Shadow DAG identifier, e.g. shd_orders_daily_20260420.",
+    required=True,
+)
+ARG_SHADOW_ID_OPT = Arg(
+    ("--shadow-id",),
+    help="Shadow DAG identifier (optional filter).",
+)
+ARG_SHADOW_STATUS = Arg(
+    ("--status",),
+    help="Filter by status (registered, active, review, promoted, discarded, cleaned_up).",
+)
+
 # backfill
 ARG_BACKFILL_DAG = Arg(flags=("--dag-id",), help="The dag to backfill.", required=True)
 ARG_BACKFILL_FROM_DATE = Arg(
@@ -1047,6 +1090,52 @@ class GroupCommand(NamedTuple):
 
 
 CLICommand = ActionCommand | GroupCommand
+
+SHADOW_COMMANDS = (
+    ActionCommand(
+        name="create",
+        help="Register a new Shadow DAG experiment.",
+        description=(
+            "Register a Shadow DAG that will run alongside a production DAG. "
+            "The shadow DAG reads production data but writes to isolated sinks. "
+            "See AIP-09 for full details."
+        ),
+        func=lazy_load_command("airflow.cli.commands.shadow_command.shadow_create"),
+        args=(
+            ARG_SHADOW_PRODUCTION_DAG,
+            ARG_SHADOW_CANDIDATE_DAG_ID,
+            ARG_SHADOW_CANDIDATE_FILE,
+            ARG_SHADOW_TTL,
+            ARG_SHADOW_DIVERGENCE_ALERT,
+            ARG_SHADOW_NOTIFY,
+            ARG_VERBOSE,
+        ),
+    ),
+    ActionCommand(
+        name="list",
+        help="List Shadow DAG experiments.",
+        func=lazy_load_command("airflow.cli.commands.shadow_command.shadow_list"),
+        args=(ARG_SHADOW_STATUS, ARG_OUTPUT, ARG_VERBOSE),
+    ),
+    ActionCommand(
+        name="report",
+        help="Show the latest comparison report for a Shadow DAG.",
+        func=lazy_load_command("airflow.cli.commands.shadow_command.shadow_report"),
+        args=(ARG_SHADOW_ID, ARG_VERBOSE),
+    ),
+    ActionCommand(
+        name="promote",
+        help="Promote a Shadow DAG to production-ready status.",
+        func=lazy_load_command("airflow.cli.commands.shadow_command.shadow_promote"),
+        args=(ARG_SHADOW_ID, ARG_VERBOSE),
+    ),
+    ActionCommand(
+        name="discard",
+        help="Discard a Shadow DAG and queue it for cleanup.",
+        func=lazy_load_command("airflow.cli.commands.shadow_command.shadow_discard"),
+        args=(ARG_SHADOW_ID, ARG_YES, ARG_VERBOSE),
+    ),
+)
 
 ASSETS_COMMANDS = (
     ActionCommand(
@@ -2113,6 +2202,7 @@ core_commands: list[CLICommand] = [
         ),
         args=(),
     ),
+    GroupCommand(name="shadow", help="Manage Shadow DAG experiments (AIP-09)", subcommands=SHADOW_COMMANDS),
     GroupCommand(name="config", help="View configuration", subcommands=CONFIG_COMMANDS),
     ActionCommand(
         name="info",

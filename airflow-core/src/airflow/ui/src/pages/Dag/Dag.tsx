@@ -23,6 +23,7 @@ import { FiBarChart, FiCode, FiUser, FiCalendar } from "react-icons/fi";
 import { LuChartColumn } from "react-icons/lu";
 import { MdDetails, MdOutlineEventNote } from "react-icons/md";
 import { RiArrowGoBackFill } from "react-icons/ri";
+import { TbShadow } from "react-icons/tb";
 import { useParams } from "react-router-dom";
 
 import { useDagServiceGetDagDetails, useDagServiceGetLatestRunInfo } from "openapi/queries";
@@ -57,6 +58,7 @@ export const Dag = () => {
     { icon: <MdOutlineEventNote />, label: translate("tabs.auditLog"), value: "events" },
     { icon: <FiCode />, label: translate("tabs.code"), value: "code" },
     { icon: <MdDetails />, label: translate("tabs.details"), value: "details" },
+    { icon: <TbShadow />, label: "Shadow Reports", value: "shadow_reports" },
   ];
 
   const refetchInterval = useAutoRefresh({ dagId });

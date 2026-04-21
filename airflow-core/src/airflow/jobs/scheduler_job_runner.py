@@ -310,6 +310,7 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
     @provide_session
     def heartbeat_callback(self, session: Session = NEW_SESSION) -> None:
         Stats.incr("scheduler_heartbeat", 1, 1)
+        self._cleanup_expired_shadows(session=session)
 
     def _get_current_dag(self, dag_id: str, session: Session) -> SerializedDAG | None:
         try:
@@ -1850,6 +1851,16 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                 session=session,
             )
 
+        # Shadow DAGs: spawn parallel runs for any active experiments.
+        # This must happen *before* the guard.commit() below so shadow runs are
+        # committed atomically with the production runs.
+        recently_created = [
+            dr
+            for dr in session.new
+            if isinstance(dr, DagRun)
+        ]
+        self._create_shadow_dag_runs(recently_created, session=session)
+
         # commit the session - Release the write lock on DagModel table.
         guard.commit()
         # END: create dagruns
@@ -2020,6 +2031,110 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
 
             # TODO[HA]: Should we do a session.flush() so we don't have to keep lots of state/object in
             #  memory for larger dags? or expunge_all()
+
+    def _create_shadow_dag_runs(
+        self,
+        production_dag_runs: list[DagRun],
+        *,
+        session: Session,
+    ) -> None:
+        """
+        For each newly created production DagRun, spawn a parallel shadow DagRun
+        if any active Shadow DAG experiments are registered for that production DAG.
+
+        This implements the "Read parity" and "Write isolation" invariants from
+        AIP-09 §4.  The shadow DagRun is a normal DagRun for the *candidate*
+        DAG, distinguished by ``conf["__shadow_run__"]`` and
+        ``conf["__shadow_id__"]``.
+
+        **Key invariant:** This method never raises — any failure is caught and
+        logged so production DagRun creation is never affected.
+        """
+        if not production_dag_runs:
+            return
+        try:
+            from sqlalchemy import select as sa_select
+
+            from airflow.models.shadow_dag import ShadowDag, ShadowDagStatus
+            from airflow.utils.types import DagRunTriggeredByType, DagRunType
+
+            prod_dag_ids = {dr.dag_id for dr in production_dag_runs}
+            active_shadows: list[ShadowDag] = list(
+                session.scalars(
+                    sa_select(ShadowDag).where(
+                        ShadowDag.production_dag_id.in_(prod_dag_ids),
+                        ShadowDag.status == ShadowDagStatus.ACTIVE.value,
+                    )
+                )
+            )
+            if not active_shadows:
+                return
+
+            shadow_map: dict[str, list[ShadowDag]] = {}
+            for s in active_shadows:
+                shadow_map.setdefault(s.production_dag_id, []).append(s)
+
+            for prod_run in production_dag_runs:
+                for shadow in shadow_map.get(prod_run.dag_id, []):
+                    candidate_dag_id = shadow.candidate_dag_id
+                    serdag = self._get_current_dag(dag_id=candidate_dag_id, session=session)
+                    if not serdag:
+                        self.log.warning(
+                            "Shadow candidate DAG '%s' not found in serialized_dag; skipping shadow run.",
+                            candidate_dag_id,
+                        )
+                        continue
+                    shadow_run_id = f"shadow__{shadow.shadow_id}__{prod_run.run_id}"
+                    try:
+                        serdag.create_dagrun(
+                            run_id=shadow_run_id,
+                            logical_date=prod_run.logical_date,
+                            data_interval=prod_run.data_interval,
+                            run_after=prod_run.run_after,
+                            run_type=DagRunType.MANUAL,
+                            triggered_by=DagRunTriggeredByType.REST_API,
+                            state=DagRunState.QUEUED,
+                            creating_job_id=self.job.id,
+                            conf={
+                                "__shadow_run__": True,
+                                "__shadow_id__": shadow.shadow_id,
+                                "__prod_run_id__": prod_run.run_id,
+                                "__prod_dag_id__": prod_run.dag_id,
+                            },
+                            session=session,
+                        )
+                        self.log.info(
+                            "Spawned shadow DagRun '%s' for production run '%s' (shadow=%s).",
+                            shadow_run_id,
+                            prod_run.run_id,
+                            shadow.shadow_id,
+                        )
+                    except Exception:
+                        self.log.exception(
+                            "Failed to create shadow DagRun for production run '%s' (shadow=%s).",
+                            prod_run.run_id,
+                            shadow.shadow_id,
+                        )
+        except Exception:
+            self.log.exception(
+                "Unexpected error in _create_shadow_dag_runs — shadow creation skipped."
+            )
+
+    def _cleanup_expired_shadows(self, *, session: Session) -> None:
+        """
+        Transition expired Shadow DAGs to CLEANED_UP status.
+
+        Called on each scheduler heartbeat to ensure shadows that have passed
+        their TTL are automatically archived without operator intervention.
+        """
+        try:
+            from airflow.shadow.lifecycle import ShadowDagService
+
+            cleaned = ShadowDagService().cleanup_expired(session=session)
+            if cleaned:
+                self.log.info("Cleaned up %d expired Shadow DAG(s).", cleaned)
+        except Exception:
+            self.log.exception("Error during shadow cleanup — skipping.")
 
     def _create_dag_runs_asset_triggered(
         self,

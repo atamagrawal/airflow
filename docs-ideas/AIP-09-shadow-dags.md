@@ -1,4 +1,4 @@
-# AIP-42: Shadow DAGs — Safe Experiments in Production
+# AIP-09: Shadow DAGs — Safe Experiments in Production
 
 | Field | Value |
 |---|---|
@@ -298,4 +298,4 @@ Open to all teams. Ship the `@shadow_dag` decorator API. Publish documentation a
 
 ---
 
-*AIP-42 · Shadow DAGs · Draft · 2026-04-20 · Data Infrastructure*
+*AIP-09 · Shadow DAGs · Draft · 2026-04-20 · Data Infrastructure*
