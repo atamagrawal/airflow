@@ -45,35 +45,41 @@ interface ShadowRunInfo {
 // ---------------------------------------------------------------------------
 
 const fetchShadowRunsForDag = async (dagId: string): Promise<ShadowRunInfo[]> => {
-  // Fetch active shadow dags for the production DAG
-  const res = await fetch(
-    `/api/v2/shadow-dags?production_dag_id=${encodeURIComponent(dagId)}&status_filter=active`,
-  );
-  if (!res.ok) return [];
-  const data = (await res.json()) as { shadow_dags: Array<{ shadow_id: string }> };
-
-  // For each shadow, fetch the latest comparison report to get verdict
-  const infos: ShadowRunInfo[] = [];
-  for (const s of data.shadow_dags) {
-    const rRes = await fetch(
-      `/api/v2/shadow-dags/${encodeURIComponent(s.shadow_id)}/reports/latest`,
+  try {
+    // Fetch active shadow dags for the production DAG. When the endpoint is
+    // unavailable, fail silently so the grid (and UAPE plugin views) still load.
+    const res = await fetch(
+      `/api/v2/shadow-dags?production_dag_id=${encodeURIComponent(dagId)}&status_filter=active`,
     );
-    if (rRes.status === 404) {
-      infos.push({ run_id: "", shadow_id: s.shadow_id, state: "queued", verdict: null });
-    } else if (rRes.ok) {
-      const r = (await rRes.json()) as {
-        run_id: string;
-        verdict: string;
-      };
-      infos.push({
-        run_id: r.run_id,
-        shadow_id: s.shadow_id,
-        state: r.verdict === "SHADOW_FAILED" ? "failed" : "success",
-        verdict: r.verdict,
-      });
+    if (!res.ok) {
+      return [];
     }
+    const data = (await res.json()) as { shadow_dags: Array<{ shadow_id: string }> };
+
+    const infos: ShadowRunInfo[] = [];
+    for (const s of data.shadow_dags) {
+      const rRes = await fetch(
+        `/api/v2/shadow-dags/${encodeURIComponent(s.shadow_id)}/reports/latest`,
+      );
+      if (rRes.status === 404) {
+        infos.push({ run_id: "", shadow_id: s.shadow_id, state: "queued", verdict: null });
+      } else if (rRes.ok) {
+        const r = (await rRes.json()) as {
+          run_id: string;
+          verdict: string;
+        };
+        infos.push({
+          run_id: r.run_id,
+          shadow_id: s.shadow_id,
+          state: r.verdict === "SHADOW_FAILED" ? "failed" : "success",
+          verdict: r.verdict,
+        });
+      }
+    }
+    return infos;
+  } catch {
+    return [];
   }
-  return infos;
 };
 
 // ---------------------------------------------------------------------------
@@ -102,7 +108,7 @@ export const ShadowLane = ({ productionRunId }: ShadowLaneProps) => {
   const { data: shadowRuns } = useQuery({
     queryFn: () => fetchShadowRunsForDag(dagId),
     queryKey: ["shadow-lane", dagId],
-    // Shadow lane data is relatively stable — refresh every 60 s
+    retry: false,
     staleTime: 60_000,
   });
 

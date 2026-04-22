@@ -30,6 +30,88 @@ export const isStatePending = (state?: TaskInstanceState | null) =>
   state === "restarting" ||
   !Boolean(state);
 
+/**
+ * TanStack Query refetch callbacks often read `query.state.data` from OpenAPI
+ * responses.  Those shapes can be partial when the request errors or the
+ * backend returns an unexpected body — `data` may exist while nested arrays
+ * (e.g. `task_instances`) are missing.  Optional chaining on `data` alone is
+ * not enough: use these guards before calling `.some` on nested arrays.
+ */
+export const hasPendingTaskInstanceRows = (
+  data: { task_instances?: Array<{ state?: TaskInstanceState | null }> } | undefined,
+): boolean => {
+  // Support partial API responses: `data` may exist as `{}` with `task_instances` omitted.
+  // Also tolerate undefined `data` when callers pass `query.state.data` and state is empty.
+  const rows = data?.task_instances;
+  return Array.isArray(rows) && rows.some((ti) => isStatePending(ti.state));
+};
+
+/** Safe for `refetchInterval` when the query object may be incomplete (edge runtimes). */
+export const hasPendingTaskInstanceRowsFromQuery = (query: {
+  state?: { data?: { task_instances?: Array<{ state?: TaskInstanceState | null }> } };
+}): boolean => hasPendingTaskInstanceRows(query.state?.data);
+
+export const hasPendingDagRunRows = (
+  data: { dag_runs?: Array<{ state?: TaskInstanceState | null }> } | undefined,
+): boolean => {
+  const rows = data?.dag_runs;
+  return Array.isArray(rows) && rows.some((r) => isStatePending(r.state));
+};
+
+type DagWithLatestRuns = {
+  is_paused?: boolean;
+  latest_dag_runs?: Array<{ state?: TaskInstanceState | null }>;
+};
+
+export const hasUnpausedDagWithPendingLatestRun = (
+  data: { dags?: DagWithLatestRuns[] } | undefined,
+): boolean => {
+  const dags = data?.dags;
+  if (!Array.isArray(dags)) {
+    return false;
+  }
+  return dags.some(
+    (dag) =>
+      !dag.is_paused &&
+      Array.isArray(dag.latest_dag_runs) &&
+      dag.latest_dag_runs.some((dr) => isStatePending(dr.state)),
+  );
+};
+
+type BackfillListRow = { completed_at: string | null; is_paused: boolean };
+
+export const hasActiveUnfinishedBackfill = (
+  data: { backfills?: BackfillListRow[] } | undefined,
+): boolean => {
+  const rows = data?.backfills;
+  return (
+    Array.isArray(rows) && rows.some((bf) => bf.completed_at === null && !bf.is_paused)
+  );
+};
+
+type HitlDetailRow = {
+  responded_at: string | undefined;
+  task_instance?: { state?: string };
+};
+
+export const hasDeferredHitlWithoutResponse = (
+  data: { hitl_details?: HitlDetailRow[] } | undefined,
+): boolean => {
+  const rows = data?.hitl_details;
+  return (
+    Array.isArray(rows) &&
+    rows.some(
+      (d) => d.responded_at === undefined && d.task_instance?.state === "deferred",
+    )
+  );
+};
+
+type GridRunRow = { state?: TaskInstanceState | null };
+
+export const hasPendingGridRunRows = (data: unknown): boolean =>
+  Array.isArray(data) &&
+  (data as GridRunRow[]).some((run) => isStatePending(run.state));
+
 // checkPendingRuns=false assumes that the component is already handling pending, setting to true will have useAutoRefresh handle it
 export const useAutoRefresh = ({
   checkPendingRuns = false,

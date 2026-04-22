@@ -31,9 +31,10 @@
 # Because Shadow DAGs are implemented as changes to airflow-core and task-sdk (not a
 # provider), they cannot be pip-installed. Instead, the patch copies new and modified
 # Python source files directly over the installed package in site-packages at build time.
-# A helper script (``docs-example/scripts/shadow_patch.sh``) performs the copy using
-# ``python -c "import airflow; ..."`` to locate site-packages dynamically — so the same
-# Dockerfile works regardless of Python micro-version.
+# A helper script (``scripts/docs-example-shadow-patch.sh``) performs the copy using
+# ``python -c "import airflow; ..."`` to locate site-packages dynamically.  The script
+# lives under the repo's ``scripts/`` directory because the root ``.dockerignore`` whitelists
+# ``scripts/`` but not ``docs-example/`` — otherwise ``COPY`` would fail to find the file.
 #
 # After building, run the DB migration inside the container:
 #
@@ -149,8 +150,8 @@ COPY task-sdk/src/airflow/sdk/__init__.py \
 #   cd airflow-core/src/airflow/ui && pnpm install && pnpm run build
 COPY airflow-core/src/airflow/ui/dist /tmp/shadow-ui-dist
 
-# ── Patch helper script ───────────────────────────────────────────────────────────────────
-COPY docs-example/scripts/shadow_patch.sh /tmp/shadow_patch.sh
+# ── Patch helper script (must be under whitelisted `scripts/` — see .dockerignore) ───────────
+COPY scripts/docs-example-shadow-patch.sh /tmp/shadow_patch.sh
 
 # COPY is root-owned; fix ownership before switching to airflow user.
 RUN chown -R airflow:root \

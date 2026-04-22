@@ -41,7 +41,7 @@ import { TruncatedText } from "src/components/TruncatedText";
 import { SearchParamsKeys, type SearchParamsKeysType } from "src/constants/searchParams";
 import { DagRunsFilters } from "src/pages/DagRunsFilters";
 import DeleteRunButton from "src/pages/DeleteRunButton";
-import { renderDuration, useAutoRefresh, isStatePending } from "src/utils";
+import { hasPendingDagRunRows, renderDuration, useAutoRefresh } from "src/utils";
 
 type DagRunRow = { row: { original: DAGRunResponse } };
 const {
@@ -261,7 +261,7 @@ export const DagRuns = () => {
     {
       placeholderData: (prev) => prev,
       refetchInterval: (query) =>
-        query.state.data?.dag_runs.some((run) => isStatePending(run.state)) ? refetchInterval : false,
+        hasPendingDagRunRows(query.state.data) ? refetchInterval : false,
     },
   );
 

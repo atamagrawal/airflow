@@ -31,7 +31,7 @@ import { StateBadge } from "src/components/StateBadge";
 import Time from "src/components/Time";
 import { TruncatedText } from "src/components/TruncatedText";
 import { SearchParamsKeys, type SearchParamsKeysType } from "src/constants/searchParams";
-import { useAutoRefresh } from "src/utils";
+import { hasDeferredHitlWithoutResponse, useAutoRefresh } from "src/utils";
 import { getHITLState } from "src/utils/hitl";
 import { getTaskInstanceLink } from "src/utils/links";
 
@@ -215,16 +215,8 @@ export const HITLTaskInstances = () => {
     {
       // Only continue auto-refetching when filtering for unreceived responses
       // and at least one TaskInstance is still deferred without a response.
-      refetchInterval: (query) => {
-        const hasDeferredWithoutResponse = Boolean(
-          query.state.data?.hitl_details.some(
-            (detail: HITLDetail) =>
-              detail.responded_at === undefined && detail.task_instance.state === "deferred",
-          ),
-        );
-
-        return hasDeferredWithoutResponse ? baseRefetchInterval : false;
-      },
+      refetchInterval: (query) =>
+        hasDeferredHitlWithoutResponse(query.state.data) ? baseRefetchInterval : false,
     },
   );
 

@@ -28,7 +28,7 @@ import { NeedsReviewButton } from "src/components/NeedsReviewButton";
 import TimeRangeSelector from "src/components/TimeRangeSelector";
 import { TrendCountButton } from "src/components/TrendCountButton";
 import { SearchParamsKeys } from "src/constants/searchParams";
-import { isStatePending, useAutoRefresh } from "src/utils";
+import { hasPendingTaskInstanceRowsFromQuery, useAutoRefresh } from "src/utils";
 
 const defaultHour = "24";
 
@@ -66,7 +66,7 @@ export const Overview = () => {
     undefined,
     {
       refetchInterval: (query) =>
-        query.state.data?.task_instances.some((ti) => isStatePending(ti.state)) ? refetchInterval : false,
+        hasPendingTaskInstanceRowsFromQuery(query) ? refetchInterval : false,
     },
   );
 

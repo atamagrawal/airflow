@@ -20,7 +20,7 @@ import { useParams } from "react-router-dom";
 
 import { useGridServiceGetGridRuns } from "openapi/queries";
 import type { DagRunState, DagRunType } from "openapi/requests/types.gen";
-import { isStatePending, useAutoRefresh } from "src/utils";
+import { hasPendingGridRunRows, useAutoRefresh } from "src/utils";
 
 export const useGridRuns = ({
   dagRunState,
@@ -56,7 +56,7 @@ export const useGridRuns = ({
     {
       placeholderData: (prev) => prev,
       refetchInterval: (query) =>
-        query.state.data?.some((run) => isStatePending(run.state)) && refetchInterval,
+        hasPendingGridRunRows(query.state.data) && refetchInterval,
     },
   );
 

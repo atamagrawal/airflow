@@ -18,7 +18,7 @@
  */
 import { useDagServiceGetDagsUi } from "openapi/queries";
 import type { DagRunState, DAGWithLatestDagRunsResponse } from "openapi/requests/types.gen";
-import { isStatePending, useAutoRefresh } from "src/utils";
+import { hasUnpausedDagWithPendingLatestRun, useAutoRefresh } from "src/utils";
 
 export type DagWithLatest = {
   last_run_start_date: string;
@@ -77,11 +77,7 @@ export const useDags = ({
     undefined,
     {
       refetchInterval: (query) =>
-        query.state.data?.dags.some(
-          (dag) => !dag.is_paused && dag.latest_dag_runs.some((dr) => isStatePending(dr.state)),
-        )
-          ? refetchInterval
-          : false,
+        hasUnpausedDagWithPendingLatestRun(query.state.data) ? refetchInterval : false,
     },
   );
 

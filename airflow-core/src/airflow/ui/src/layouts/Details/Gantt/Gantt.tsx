@@ -50,7 +50,7 @@ import { useGridRuns } from "src/queries/useGridRuns";
 import { useGridStructure } from "src/queries/useGridStructure";
 import { useGridTiSummariesStream } from "src/queries/useGridTISummaries";
 import { getComputedCSSVariableValue } from "src/theme";
-import { isStatePending, useAutoRefresh } from "src/utils";
+import { hasPendingTaskInstanceRowsFromQuery, useAutoRefresh } from "src/utils";
 
 import { createHandleBarClick, createHandleBarHover, createChartOptions, transformGanttData } from "./utils";
 
@@ -150,7 +150,7 @@ export const Gantt = ({ dagRunState, limit, runAfterGte, runAfterLte, runType, t
     {
       enabled: Boolean(dagId) && Boolean(runId) && Boolean(selectedRun),
       refetchInterval: (query) =>
-        query.state.data?.task_instances.some((ti) => isStatePending(ti.state)) ? refetchInterval : false,
+        hasPendingTaskInstanceRowsFromQuery(query) ? refetchInterval : false,
     },
   );
 

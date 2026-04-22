@@ -30,7 +30,7 @@ import {
   useBackfillServiceUnpauseBackfill,
 } from "openapi/queries";
 import type { BackfillResponse } from "openapi/requests/types.gen";
-import { useAutoRefresh } from "src/utils";
+import { hasActiveUnfinishedBackfill, useAutoRefresh } from "src/utils";
 
 import Time from "../Time";
 import { ProgressBar } from "../ui";
@@ -60,9 +60,7 @@ const BackfillBanner = ({ dagId }: Props) => {
     undefined,
     {
       refetchInterval: (query) =>
-        query.state.data?.backfills.some((bf: BackfillResponse) => bf.completed_at === null && !bf.is_paused)
-          ? refetchInterval
-          : false,
+        hasActiveUnfinishedBackfill(query.state.data) ? refetchInterval : false,
     },
   );
   const [backfill] = data?.backfills.filter((bf: BackfillResponse) => bf.completed_at === null) ?? [];

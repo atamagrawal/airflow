@@ -22,14 +22,14 @@ import { useTranslation } from "react-i18next";
 import { CgRedo } from "react-icons/cg";
 
 import { useDagServiceGetDagDetails } from "openapi/queries";
-import type { DAGRunResponse, TaskInstanceResponse } from "openapi/requests/types.gen";
+import type { DAGRunResponse } from "openapi/requests/types.gen";
 import { ActionAccordion } from "src/components/ActionAccordion";
 import { Checkbox, Dialog } from "src/components/ui";
 import SegmentedControl from "src/components/ui/SegmentedControl";
 import { useClearDagRunDryRun } from "src/queries/useClearDagRunDryRun";
 import { useClearDagRun } from "src/queries/useClearRun";
 import { usePatchDagRun } from "src/queries/usePatchDagRun";
-import { isStatePending, useAutoRefresh } from "src/utils";
+import { hasPendingTaskInstanceRowsFromQuery, useAutoRefresh } from "src/utils";
 
 type Props = {
   readonly dagRun: DAGRunResponse;
@@ -59,9 +59,7 @@ const ClearRunDialog = ({ dagRun, onClose, open }: Props) => {
     dagRunId,
     options: {
       refetchInterval: (query) =>
-        query.state.data?.task_instances.some((ti: TaskInstanceResponse) => isStatePending(ti.state))
-          ? refetchInterval
-          : false,
+        hasPendingTaskInstanceRowsFromQuery(query) ? refetchInterval : false,
     },
     requestBody: { only_failed: onlyFailed, run_on_latest_version: runOnLatestVersion },
   });

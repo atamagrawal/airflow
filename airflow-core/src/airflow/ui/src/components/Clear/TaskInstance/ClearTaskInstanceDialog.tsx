@@ -30,7 +30,7 @@ import SegmentedControl from "src/components/ui/SegmentedControl";
 import { useClearTaskInstances } from "src/queries/useClearTaskInstances";
 import { useClearTaskInstancesDryRun } from "src/queries/useClearTaskInstancesDryRun";
 import { usePatchTaskInstance } from "src/queries/usePatchTaskInstance";
-import { isStatePending, useAutoRefresh } from "src/utils";
+import { hasPendingTaskInstanceRowsFromQuery, useAutoRefresh } from "src/utils";
 
 import ClearTaskInstanceConfirmationDialog from "./ClearTaskInstanceConfirmationDialog";
 
@@ -85,7 +85,7 @@ const ClearTaskInstanceDialog = ({ onClose: onCloseDialog, open: openDialog, tas
     options: {
       enabled: openDialog,
       refetchInterval: (query) =>
-        query.state.data?.task_instances.some((ti: TaskInstanceResponse) => isStatePending(ti.state))
+        hasPendingTaskInstanceRowsFromQuery(query)
           ? refetchInterval
           : false,
       refetchOnMount: "always",

@@ -53,12 +53,12 @@ export const Dag = () => {
     { icon: <TaskIcon />, label: translate("tabs.tasks"), value: "tasks" },
     { icon: <FiCalendar />, label: translate("tabs.calendar"), value: "calendar" },
     ...externalTabs,
+    { icon: <TbShadow />, label: "Shadow Reports", value: "shadow_reports" },
     { icon: <FiUser />, label: translate("tabs.requiredActions"), value: "required_actions" },
     { icon: <RiArrowGoBackFill />, label: translate("tabs.backfills"), value: "backfills" },
     { icon: <MdOutlineEventNote />, label: translate("tabs.auditLog"), value: "events" },
     { icon: <FiCode />, label: translate("tabs.code"), value: "code" },
     { icon: <MdDetails />, label: translate("tabs.details"), value: "details" },
-    { icon: <TbShadow />, label: "Shadow Reports", value: "shadow_reports" },
   ];
 
   const refetchInterval = useAutoRefresh({ dagId });

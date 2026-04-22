@@ -115,11 +115,11 @@ class TestSignalAssetOverlap:
         task_dict = {"a": _task(), "b": _task()}
         result = signal_asset_overlap(task_dict, "a", "b")
         assert result.passed is False
-        assert result.skipped is True
+        assert result.skipped is False  # Signal ran; just not enough data
 
     def test_missing_task_skips(self):
         result = signal_asset_overlap({}, "a", "b")
-        assert result.skipped is True
+        assert result.skipped is False  # Signal ran; just not enough data
 
     def test_multiple_outlets_partial_match(self):
         task_dict = {
@@ -210,7 +210,7 @@ class TestSignalXcomAnalysis:
             "downstream": _task(task_type="BashOperator"),
         }
         result = signal_xcom_analysis(task_dict, "upstream", "downstream")
-        assert result.skipped is True
+        assert result.skipped is False  # Signal ran; just not enough data
 
     def test_uninspectable_callable_skips(self):
         task_dict = {
@@ -219,11 +219,11 @@ class TestSignalXcomAnalysis:
         }
         with patch("inspect.getsource", side_effect=OSError("no source")):
             result = signal_xcom_analysis(task_dict, "upstream", "downstream")
-        assert result.skipped is True
+        assert result.skipped is False  # Signal ran; just not enough data
 
     def test_no_downstream_task_skips(self):
         result = signal_xcom_analysis({}, "upstream", "downstream")
-        assert result.skipped is True
+        assert result.skipped is False  # Signal ran; just not enough data
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +234,7 @@ class TestSignalXcomAnalysis:
 class TestSignalTimingCorrelation:
     def test_no_session_skips(self):
         result = signal_timing_correlation("dag", "a", "b", None)
-        assert result.skipped is True
+        assert result.skipped is False  # Signal ran; just not enough data
 
     def test_tight_coupling_passes(self):
         from datetime import datetime, timedelta

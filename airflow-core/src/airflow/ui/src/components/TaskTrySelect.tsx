@@ -22,7 +22,7 @@ import { useTranslation } from "react-i18next";
 import { useTaskInstanceServiceGetMappedTaskInstanceTries } from "openapi/queries";
 import type { TaskInstanceHistoryResponse, TaskInstanceResponse } from "openapi/requests/types.gen";
 import { StateBadge } from "src/components/StateBadge";
-import { isStatePending, useAutoRefresh } from "src/utils";
+import { hasPendingTaskInstanceRowsFromQuery, isStatePending, useAutoRefresh } from "src/utils";
 
 import TaskInstanceTooltip from "./TaskInstanceTooltip";
 import { Select } from "./ui";
@@ -57,7 +57,7 @@ export const TaskTrySelect = ({ onSelectTryNumber, selectedTryNumber, taskInstan
       refetchInterval: (query) =>
         // We actually want to use || here
         // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
-        query.state.data?.task_instances.some((ti) => isStatePending(ti.state)) || isStatePending(state)
+        hasPendingTaskInstanceRowsFromQuery(query) || isStatePending(state)
           ? refetchInterval
           : false,
     },

@@ -29,7 +29,7 @@ import { Checkbox, Dialog } from "src/components/ui";
 import SegmentedControl from "src/components/ui/SegmentedControl";
 import { useClearTaskInstances } from "src/queries/useClearTaskInstances";
 import { useClearTaskInstancesDryRun } from "src/queries/useClearTaskInstancesDryRun";
-import { isStatePending, useAutoRefresh } from "src/utils";
+import { hasPendingTaskInstanceRowsFromQuery, useAutoRefresh } from "src/utils";
 
 type Props = {
   readonly onClose: () => void;
@@ -84,7 +84,7 @@ export const ClearGroupTaskInstanceDialog = ({ onClose, open, taskInstance }: Pr
     options: {
       enabled: open && groupTaskIds.length > 0,
       refetchInterval: (query) =>
-        query.state.data?.task_instances.some((ti: TaskInstanceResponse) => isStatePending(ti.state))
+        hasPendingTaskInstanceRowsFromQuery(query)
           ? refetchInterval
           : false,
       refetchOnMount: "always",

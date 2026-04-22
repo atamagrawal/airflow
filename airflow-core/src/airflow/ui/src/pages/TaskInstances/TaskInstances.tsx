@@ -36,7 +36,7 @@ import { StateBadge } from "src/components/StateBadge";
 import Time from "src/components/Time";
 import { TruncatedText } from "src/components/TruncatedText";
 import { SearchParamsKeys, type SearchParamsKeysType } from "src/constants/searchParams";
-import { useAutoRefresh, isStatePending, renderDuration } from "src/utils";
+import { hasPendingTaskInstanceRowsFromQuery, renderDuration, useAutoRefresh } from "src/utils";
 import { getTaskInstanceLink } from "src/utils/links";
 
 import DeleteTaskInstanceButton from "./DeleteTaskInstanceButton";
@@ -288,7 +288,7 @@ export const TaskInstances = () => {
     {
       placeholderData: (prev) => prev,
       refetchInterval: (query) =>
-        query.state.data?.task_instances.some((ti) => isStatePending(ti.state)) ? refetchInterval : false,
+        hasPendingTaskInstanceRowsFromQuery(query) ? refetchInterval : false,
     },
   );
 

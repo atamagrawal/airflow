@@ -14,7 +14,7 @@ The `docs-example/Dockerfile` handles this with two mechanisms:
 
 | Mechanism | What it covers |
 |-----------|---------------|
-| `docs-example/scripts/shadow_patch.sh` | All new/modified Python source files (models, shadow package, CLI, API, scheduler, task-sdk) |
+| `scripts/docs-example-shadow-patch.sh` | All new/modified Python source files (models, shadow package, CLI, API, scheduler, task-sdk) |
 | Inline `cp -r` `RUN` step | Pre-built React UI bundle (Shadow Lane + Shadow Reports tab) |
 
 ---
@@ -76,7 +76,7 @@ docker build \
 3. Fixes ownership of all staged files.
 4. Switches to the `airflow` user.
 5. `pip install`s the provider packages.
-6. Runs `shadow_patch.sh`, which locates site-packages dynamically and overlays every new/modified `.py` file.
+6. Runs `docs-example-shadow-patch.sh` (copied to `/tmp/shadow_patch.sh`), which locates site-packages dynamically and overlays every new/modified `.py` file.
 7. Overlays the pre-built `ui/dist/` bundle onto `$AIRFLOW_PKG/ui/dist/`.
 
 To override the Airflow version:
@@ -255,6 +255,21 @@ New UI source files involved (must be present before `pnpm run build`):
 
 ## Troubleshooting
 
+### `COPY failed: file not found in build context: docs-example/scripts/...` or `scripts/...`
+
+Build **from the repository root** with `.` as the context:
+
+```bash
+docker build -f docs-example/Dockerfile -t your-tag .
+```
+
+The root `.dockerignore` excludes most directories by default. Only whitelisted
+paths (including `scripts/`, `airflow-core/`, `task-sdk/`, `providers/`, `dev/`)
+are sent to the Docker daemon.  The AIP-09 patch script therefore lives at
+`scripts/docs-example-shadow-patch.sh`, not under `docs-example/scripts/`, so
+that `COPY` can see it.  If you still see a missing `scripts/...` file, ensure
+the file exists in your tree and you are not using a minimal checkout.
+
 ### `COPY failed: file not found in build context: airflow-core/src/airflow/ui/dist`
 
 You haven't built the UI yet. Run Step 1 first:
@@ -262,6 +277,21 @@ You haven't built the UI yet. Run Step 1 first:
 ```bash
 cd airflow-core/src/airflow/ui && pnpm install && pnpm run build
 ```
+
+### `undefined is not an object (evaluating '….task_instances.some')` in the browser
+
+This comes from the **React UI bundle** (TanStack Query `refetchInterval` callbacks), not from
+whether a DAG has Shadow DAG metadata. The fix is in `airflow-core/src/airflow/ui` (guards on
+`task_instances` and optional `query.state`).
+
+If you still see it:
+
+1. **Rebuild the UI** after pulling changes, then **re-copy** `airflow-core/src/airflow/ui/dist`
+   into the image (or rebuild the Docker image that embeds that `dist/`).
+2. Rebuild **without** Docker layer cache so the new `dist/` is not skipped:
+   `docker build --no-cache -f docs-example/Dockerfile …`
+3. **Hard-refresh** the browser (or use a private window) so cached `assets/*.js` chunks are not
+   reused. Vite splits code; an old chunk can keep the bug while the rest of the app is new.
 
 ### `airflow shadow` command not found
 
