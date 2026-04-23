@@ -311,6 +311,7 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
     def heartbeat_callback(self, session: Session = NEW_SESSION) -> None:
         Stats.incr("scheduler_heartbeat", 1, 1)
         self._cleanup_expired_shadows(session=session)
+        self._record_shadow_reports_for_finished_runs(session=session)
 
     def _get_current_dag(self, dag_id: str, session: Session) -> SerializedDAG | None:
         try:
@@ -1854,11 +1855,7 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
         # Shadow DAGs: spawn parallel runs for any active experiments.
         # This must happen *before* the guard.commit() below so shadow runs are
         # committed atomically with the production runs.
-        recently_created = [
-            dr
-            for dr in session.new
-            if isinstance(dr, DagRun)
-        ]
+        recently_created = [dr for dr in session.new if isinstance(dr, DagRun)]
         self._create_shadow_dag_runs(recently_created, session=session)
 
         # commit the session - Release the write lock on DagModel table.
@@ -2039,6 +2036,8 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
         session: Session,
     ) -> None:
         """
+        Spawn shadow DagRuns for newly created production runs.
+
         For each newly created production DagRun, spawn a parallel shadow DagRun
         if any active Shadow DAG experiments are registered for that production DAG.
 
@@ -2073,6 +2072,95 @@ class SchedulerJobRunner(BaseJobRunner, LoggingMixin):
                 self.log.info("Cleaned up %d expired Shadow DAG(s).", cleaned)
         except Exception:
             self.log.exception("Error during shadow cleanup — skipping.")
+
+    def _record_shadow_reports_for_finished_runs(self, *, session: Session) -> None:
+        """
+        Persist comparison reports for finished shadow DagRuns.
+
+        Runs in scheduler heartbeat so DagRun state transitions stay lightweight.
+        """
+        try:
+            import json
+            from pathlib import Path
+
+            from airflow.models.shadow_dag import ShadowDagNotFound
+            from airflow.shadow.comparison import ComparisonEngine, ComparisonReport, Verdict
+            from airflow.shadow.lifecycle import ShadowDagService
+            from airflow.shadow.sink_proxy import ShadowContext
+
+            # Keep heartbeat work bounded; iterate newest terminal runs first.
+            terminal_runs = list(
+                session.scalars(
+                    select(DagRun)
+                    .where(DagRun.state.in_((DagRunState.SUCCESS, DagRunState.FAILED)))
+                    .order_by(DagRun.updated_at.desc())
+                    .limit(200)
+                )
+            )
+            if not terminal_runs:
+                return
+
+            service = ShadowDagService()
+            airflow_home = Path(os.environ.get("AIRFLOW_HOME", "~/airflow")).expanduser()
+
+            for dag_run in terminal_runs:
+                conf = dag_run.conf or {}
+                if not isinstance(conf, dict) or not conf.get("__shadow_run__"):
+                    continue
+
+                shadow_id = conf.get("__shadow_id__")
+                if not isinstance(shadow_id, str) or not shadow_id:
+                    continue
+
+                try:
+                    shadow = service.get(shadow_id, session=session)
+                except ShadowDagNotFound:
+                    continue
+
+                if shadow.last_comparison_json:
+                    try:
+                        last = json.loads(shadow.last_comparison_json)
+                        if isinstance(last, dict) and last.get("run_id") == dag_run.run_id:
+                            continue
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        # Corrupted payloads are overwritten by fresh reports.
+                        pass
+
+                prod_dag_id = conf.get("__prod_dag_id__")
+                if not isinstance(prod_dag_id, str):
+                    prod_dag_id = ""
+
+                shadow_ctx = ShadowContext(
+                    shadow_id=shadow_id,
+                    production_dag_id=prod_dag_id,
+                    run_id=dag_run.run_id,
+                    sink_root=airflow_home / "shadow" / shadow_id / dag_run.run_id,
+                )
+
+                prod_sink_root = conf.get("__prod_sink_root__")
+                prod_root_path = (
+                    Path(prod_sink_root).expanduser() if isinstance(prod_sink_root, str) else None
+                )
+
+                if dag_run.state == DagRunState.FAILED:
+                    report = ComparisonReport(
+                        run_id=dag_run.run_id,
+                        shadow_id=shadow_id,
+                        row_count_prod=0,
+                        row_count_shadow=0,
+                        row_count_delta_pct=0.0,
+                        verdict=Verdict.SHADOW_FAILED,
+                        error="Shadow DagRun failed before comparison.",
+                    )
+                else:
+                    report = ComparisonEngine().compare(
+                        shadow_ctx=shadow_ctx,
+                        shadow_dag=shadow,
+                        prod_sink_root=prod_root_path,
+                    )
+                service.record_comparison(shadow_id, report=report, session=session)
+        except Exception:
+            self.log.exception("Error while recording shadow comparison reports — skipping.")
 
     def _create_dag_runs_asset_triggered(
         self,

@@ -125,6 +125,10 @@ COPY task-sdk/src/airflow/sdk/definitions/shadow.py \
 COPY airflow-core/src/airflow/models/__init__.py \
      /tmp/shadow-patch/airflow/models/__init__.py
 
+# models/dagrun.py — write shadow comparison report on run completion
+COPY airflow-core/src/airflow/models/dagrun.py \
+     /tmp/shadow-patch/airflow/models/dagrun.py
+
 # dag_processing/collection.py — _auto_register_shadow_dags hook
 COPY airflow-core/src/airflow/dag_processing/collection.py \
      /tmp/shadow-patch/airflow/dag_processing/collection.py

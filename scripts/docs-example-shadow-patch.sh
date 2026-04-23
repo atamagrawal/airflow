@@ -42,6 +42,9 @@ cp -v /tmp/shadow-patch/airflow/models/shadow_dag.py \
 cp -v /tmp/shadow-patch/airflow/models/__init__.py \
       "$AIRFLOW_PKG/models/__init__.py"
 
+cp -v /tmp/shadow-patch/airflow/models/dagrun.py \
+      "$AIRFLOW_PKG/models/dagrun.py"
+
 mkdir -p "$AIRFLOW_PKG/shadow"
 cp -rv /tmp/shadow-patch/airflow/shadow/. \
        "$AIRFLOW_PKG/shadow/"
