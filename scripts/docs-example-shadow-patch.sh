@@ -70,6 +70,12 @@ cp -v /tmp/shadow-patch/airflow/dag_processing/collection.py \
 cp -v /tmp/shadow-patch/airflow/jobs/scheduler_job_runner.py \
       "$AIRFLOW_PKG/jobs/scheduler_job_runner.py"
 
+cp -v /tmp/shadow-patch/airflow/api/common/trigger_dag.py \
+      "$AIRFLOW_PKG/api/common/trigger_dag.py"
+
+cp -v /tmp/shadow-patch/airflow/api_fastapi/core_api/routes/public/dag_run.py \
+      "$AIRFLOW_PKG/api_fastapi/core_api/routes/public/dag_run.py"
+
 # ── Overlay task-sdk files ────────────────────────────────────────────────────
 cp -v /tmp/shadow-patch/sdk/__init__.py \
       "$SDK_PKG/__init__.py"

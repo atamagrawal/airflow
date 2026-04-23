@@ -26,6 +26,7 @@ from airflow._shared.timezones import timezone
 from airflow.exceptions import DagNotFound, DagRunAlreadyExists
 from airflow.models import DagModel, DagRun
 from airflow.models.dagbag import DBDagBag
+from airflow.shadow.dag_runs import create_shadow_dag_runs_for_production_dag_runs
 from airflow.utils.session import NEW_SESSION, provide_session
 from airflow.utils.state import DagRunState
 from airflow.utils.types import DagRunTriggeredByType, DagRunType
@@ -126,6 +127,8 @@ def _trigger_dag(
         partition_key=partition_key,
         session=session,
     )
+
+    create_shadow_dag_runs_for_production_dag_runs([dag_run], session=session, creating_job_id=None)
 
     return dag_run
 

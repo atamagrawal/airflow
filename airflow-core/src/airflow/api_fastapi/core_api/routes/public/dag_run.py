@@ -90,6 +90,7 @@ from airflow.listeners.listener import get_listener_manager
 from airflow.models import DagModel, DagRun
 from airflow.models.asset import AssetEvent
 from airflow.models.dag_version import DagVersion
+from airflow.shadow.dag_runs import create_shadow_dag_runs_for_production_dag_runs
 from airflow.utils.state import DagRunState
 from airflow.utils.types import DagRunTriggeredByType, DagRunType
 
@@ -497,6 +498,8 @@ def trigger_dag_run(
             partition_key=params["partition_key"],
             session=session,
         )
+
+        create_shadow_dag_runs_for_production_dag_runs([dag_run], session=session, creating_job_id=None)
 
         dag_run_note = body.note
         if dag_run_note:

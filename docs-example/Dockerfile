@@ -133,6 +133,14 @@ COPY airflow-core/src/airflow/dag_processing/collection.py \
 COPY airflow-core/src/airflow/jobs/scheduler_job_runner.py \
      /tmp/shadow-patch/airflow/jobs/scheduler_job_runner.py
 
+# shadow run creation helper + manual trigger hook
+COPY airflow-core/src/airflow/shadow/dag_runs.py \
+     /tmp/shadow-patch/airflow/shadow/dag_runs.py
+COPY airflow-core/src/airflow/api/common/trigger_dag.py \
+     /tmp/shadow-patch/airflow/api/common/trigger_dag.py
+COPY airflow-core/src/airflow/api_fastapi/core_api/routes/public/dag_run.py \
+     /tmp/shadow-patch/airflow/api_fastapi/core_api/routes/public/dag_run.py
+
 # cli/cli_config.py — SHADOW_COMMANDS group registered in core_commands
 COPY airflow-core/src/airflow/cli/cli_config.py \
      /tmp/shadow-patch/airflow/cli/cli_config.py
